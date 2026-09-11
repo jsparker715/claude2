@@ -3,7 +3,7 @@
  * directly. Ratios and shares are fractions (0.10 == 10%).
  */
 import { ComplianceTargets } from "./types";
-import { ComplianceCheck } from "./results";
+import { ComplianceCheck, ClientMetrics } from "./results";
 
 function pct(x: number): string {
   return `${(x * 100).toFixed(1)}%`;
@@ -55,24 +55,27 @@ export function telehealthCheck(
 }
 
 /**
- * Caregiver-training (97156) hours must meet the target scaled to how much of a
- * quarter the period represents: months = target/3, a full quarter = target,
- * multi-quarter (YTD/all) scales up by the number of months / 3.
+ * Caregiver training is PER FAMILY: every assigned client's family must get the
+ * required caregiver-training hours (3/quarter, pro-rated) from the BCBA. The
+ * check passes only when all families are met. `value` = families met,
+ * `target` = families total.
  */
-export function caregiverTrainingCheck(
-  hoursDelivered: number,
-  monthsCovered: number,
-  t: ComplianceTargets
-): ComplianceCheck {
+export function caregiverTrainingCheck(clients: ClientMetrics[], perQuarter: number, monthsCovered: number): ComplianceCheck {
   const quarterEquivalents = monthsCovered > 0 ? monthsCovered / 3 : 1;
-  const target = t.caregiverTrainingHoursPerQuarter * quarterEquivalents;
-  const met = hoursDelivered >= target - 1e-9;
+  const perFamily = perQuarter * quarterEquivalents;
+  const total = clients.length;
+  const met = clients.filter((c) => c.caregiverMet).length;
+  if (total === 0) {
+    return { value: 0, target: 0, met: true, detail: "No assigned families this period." };
+  }
+  const shortfalls = clients.filter((c) => !c.caregiverMet).map((c) => c.client);
+  const allMet = met === total;
   return {
-    value: hoursDelivered,
-    target,
-    met,
-    detail: met
-      ? `${hoursDelivered.toFixed(1)} hrs meets the ${target.toFixed(1)} hr target.`
-      : `${hoursDelivered.toFixed(1)} of ${target.toFixed(1)} required caregiver-training hrs.`,
+    value: met,
+    target: total,
+    met: allMet,
+    detail: allMet
+      ? `All ${total} famil${total === 1 ? "y" : "ies"} met the ${perFamily.toFixed(1)} hr/family target.`
+      : `${met} of ${total} families met the ${perFamily.toFixed(1)} hr/family target. Behind: ${shortfalls.join(", ")}.`,
   };
 }

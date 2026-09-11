@@ -16,6 +16,7 @@ import {
   ComplianceCheck,
 } from "./results";
 import { normalizeName, canonicalName } from "./names";
+import { parseISODate, monthKey } from "./dateutil";
 import { detectPeriods, PeriodDef } from "./periods";
 import {
   personalAggregate,
@@ -96,18 +97,6 @@ function telehealthShare(
   return total > 0 ? telehealth / total : 0;
 }
 
-function requiredForMonths(cfg: BcbaConfig, months: string[]): number | null {
-  let sum = 0;
-  let any = false;
-  for (const m of months) {
-    if (Object.prototype.hasOwnProperty.call(cfg.requiredHoursByMonth, m)) {
-      sum += cfg.requiredHoursByMonth[m];
-      any = true;
-    }
-  }
-  return any ? sum : null;
-}
-
 export function buildBcbaReport(input: EngineInput): BcbaReport {
   const opt = resolveOptions(input.options);
   const bcba = normalizeName(input.config.name);
@@ -148,14 +137,25 @@ export function buildBcbaReport(input: EngineInput): BcbaReport {
     supRatio: number | null;
     ptoHours: number;
     baseRequired: number | null;
+    qualifyingBillable: number;
+    excludedZeroReqMonths: number;
+    caregiverExcess: number;
     supCheck: ComplianceCheck;
     teleCheck: ComplianceCheck;
     caregiverCheck: ComplianceCheck;
   }
+  const reqByMonth = input.config.requiredHoursByMonth || {};
   const raws: Raw[] = periods.map((def) => {
     const periodSessions = input.sessions.filter((s) => sessionInPeriod(s, def));
     const personal = personalAggregate(periodSessions, bcba);
-    const clients = clientMetrics(periodSessions, bcba, assignedClients);
+    const monthsCovered = def.kind === "all" ? def.months.length || 3 : def.months.length;
+    const clients = clientMetrics(
+      periodSessions,
+      bcba,
+      assignedClients,
+      targets.caregiverTrainingHoursPerQuarter,
+      monthsCovered
+    );
 
     // Supervision ratio basis.
     let supRatio: number | null;
@@ -174,8 +174,30 @@ export function buildBcbaReport(input: EngineInput): BcbaReport {
     });
 
     const ptoHours = ptoForMonths(ptoByMonth, def.months);
-    const baseRequired = requiredForMonths(input.config, def.months);
-    const monthsCovered = def.kind === "all" ? def.months.length || 3 : def.months.length;
+
+    // Zero-requirement months don't count toward requirement, excess, or bonus.
+    const qualifyingMonths = def.months.filter((m) => (reqByMonth[m] || 0) > 0);
+    const qSet: { [k: string]: boolean } = {};
+    for (const m of qualifyingMonths) qSet[m] = true;
+    const baseRequired = qualifyingMonths.length
+      ? qualifyingMonths.reduce((sum, m) => sum + (reqByMonth[m] || 0), 0)
+      : null;
+    const qualifyingSessions = periodSessions.filter((s) => {
+      const d = parseISODate(s.date);
+      return d ? !!qSet[monthKey(d)] : false;
+    });
+    const qualifyingBillable = personalAggregate(qualifyingSessions, bcba).billableHours;
+    const excludedZeroReqMonths = def.months.filter(
+      (m) => Object.prototype.hasOwnProperty.call(reqByMonth, m) && reqByMonth[m] === 0
+    ).length;
+
+    // Per-family caregiver excess for the bonus (summed across families).
+    const quarterEquivalents = monthsCovered > 0 ? monthsCovered / 3 : 1;
+    const perFamilyBonusBase = opt.bonus.caregiverBonusBaseHours * quarterEquivalents;
+    const caregiverExcess = clients.reduce(
+      (sum, c) => sum + Math.max(0, c.bcbaCaregiverHours - perFamilyBonusBase),
+      0
+    );
 
     return {
       def,
@@ -184,26 +206,29 @@ export function buildBcbaReport(input: EngineInput): BcbaReport {
       supRatio,
       ptoHours,
       baseRequired,
+      qualifyingBillable,
+      excludedZeroReqMonths,
+      caregiverExcess,
       supCheck: supervisionRatioCheck(supRatio, targets),
       teleCheck: telehealthCheck(teleShare, targets, exemptAssignedCount),
-      caregiverCheck: caregiverTrainingCheck(personal.caregiverTrainingHours, monthsCovered, targets),
+      caregiverCheck: caregiverTrainingCheck(clients, targets.caregiverTrainingHoursPerQuarter, monthsCovered),
     };
   });
 
-  // Phase 2: quarterly rollover.
+  // Phase 2: quarterly rollover (uses qualifying billable).
   const quarterInputs: QuarterInput[] = raws
     .filter((r) => r.def.kind === "quarter")
     .map((r) => ({
       quarterKey: r.def.key,
       baseRequired: r.baseRequired,
-      billable: r.personal.billableHours,
+      billable: r.qualifyingBillable,
     }));
   const rollover = computeRollover(quarterInputs, opt.rolloverFraction, opt.rolloverCapHours);
 
   // Phase 3: assemble period reports (+ bonus on quarters).
   const periodReports: PeriodReport[] = raws.map((r) => {
     let effectiveRequired = r.baseRequired;
-    let variance = r.baseRequired === null ? null : r.personal.billableHours - r.baseRequired;
+    let variance = r.baseRequired === null ? null : r.qualifyingBillable - r.baseRequired;
     let rolledIn = 0;
     let rollingOut = 0;
 
@@ -221,9 +246,9 @@ export function buildBcbaReport(input: EngineInput): BcbaReport {
       r.def.kind === "quarter"
         ? computeBonus(
             {
-              billableHours: r.personal.billableHours,
+              billableHours: r.qualifyingBillable,
               effectiveRequiredHours: effectiveRequired,
-              caregiverTrainingHours: r.personal.caregiverTrainingHours,
+              caregiverExcessHours: r.caregiverExcess,
             },
             opt.bonus
           )
@@ -235,6 +260,8 @@ export function buildBcbaReport(input: EngineInput): BcbaReport {
       label: r.def.label,
       months: r.def.months.slice(),
       billableHours: r.personal.billableHours,
+      qualifyingBillableHours: r.qualifyingBillable,
+      excludedZeroReqMonths: r.excludedZeroReqMonths,
       directHours: r.personal.directHours,
       supervisionHours: r.personal.supervisionHours,
       caregiverTrainingHours: r.personal.caregiverTrainingHours,

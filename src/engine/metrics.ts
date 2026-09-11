@@ -66,17 +66,24 @@ export function personalAggregate(sessions: SessionRow[], bcba: string): Persona
 export function clientMetrics(
   sessions: SessionRow[],
   bcba: string,
-  assignedClients: string[]
+  assignedClients: string[],
+  caregiverHoursPerQuarter: number,
+  monthsCovered: number
 ): ClientMetrics[] {
   const target = normalizeName(bcba);
   const wanted = new Map<string, string>(); // normalized -> display
   for (const c of assignedClients) wanted.set(normalizeName(c), c);
 
+  // Required family-training hours this period: 3/quarter, pro-rated by months.
+  const quarterEquivalents = monthsCovered > 0 ? monthsCovered / 3 : 1;
+  const caregiverRequired = caregiverHoursPerQuarter * quarterEquivalents;
+
   interface Acc {
     display: string;
     direct: number;
     supervision: number;
-    caregiver: number;
+    caregiver: number; // all providers
+    bcbaCaregiver: number; // this BCBA only
     total: number;
     bcbaDeliveredCaregiver: boolean;
   }
@@ -87,6 +94,7 @@ export function clientMetrics(
       direct: 0,
       supervision: 0,
       caregiver: 0,
+      bcbaCaregiver: 0,
       total: 0,
       bcbaDeliveredCaregiver: false,
     });
@@ -102,7 +110,10 @@ export function clientMetrics(
     else if (s.billingCode === CODE_SUPERVISION) acc.supervision += hrs;
     else if (s.billingCode === CODE_CAREGIVER_TRAINING) {
       acc.caregiver += hrs;
-      if (normalizeName(s.teamMember) === target && hrs > 0) acc.bcbaDeliveredCaregiver = true;
+      if (normalizeName(s.teamMember) === target && hrs > 0) {
+        acc.bcbaDeliveredCaregiver = true;
+        acc.bcbaCaregiver += hrs;
+      }
     }
   }
 
@@ -118,6 +129,9 @@ export function clientMetrics(
       totalHours: acc.total,
       supervisionRatio: acc.direct > 0 ? acc.supervision / acc.direct : null,
       caregiverTrainingFlag: flag,
+      bcbaCaregiverHours: acc.bcbaCaregiver,
+      caregiverRequiredHours: caregiverRequired,
+      caregiverMet: acc.bcbaCaregiver >= caregiverRequired - 1e-9,
     });
   }
   out.sort((a, b) => a.client.localeCompare(b.client));

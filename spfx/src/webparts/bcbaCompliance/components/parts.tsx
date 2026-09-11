@@ -74,6 +74,12 @@ export const KpiTiles: React.FC<{ period: PeriodReport }> = ({ period }) => {
             Target includes <b>{fmt(period.rolledInHours)} hrs</b> rolled in from last quarter.
           </div>
         ) : null}
+        {period.excludedZeroReqMonths > 0 ? (
+          <div className={styles.meta}>
+            Excludes <b>{period.excludedZeroReqMonths}</b> no-requirement month
+            {period.excludedZeroReqMonths === 1 ? "" : "s"} ({fmt(period.qualifyingBillableHours, 0)} counted).
+          </div>
+        ) : null}
       </div>
 
       <div className={styles.tile}>
@@ -127,13 +133,13 @@ const CaregiverTile: React.FC<{ period: PeriodReport }> = ({ period }) => {
   return (
     <div className={styles.tile}>
       <span className={cn(styles.stripe, cc.met ? styles.sGood : styles.sWarn)} />
-      <div className={styles.cap}>Caregiver training 97156</div>
+      <div className={styles.cap}>Family training 97156</div>
       <div className={styles.big}>
-        {fmt(cc.value)}
-        <span className={styles.unit}>hrs</span>
+        {cc.target > 0 ? `${cc.value}/${cc.target}` : "—"}
+        <span className={styles.unit}>families</span>
       </div>
       <div className={styles.meta}>
-        <Chip kind={cc.met ? "good" : "warn"}>{cc.met ? "target met" : `below ${fmt(cc.target)} hr target`}</Chip>
+        <Chip kind={cc.met ? "good" : "warn"}>{cc.met ? "all families met" : "families short of 3 hrs"}</Chip>
       </div>
     </div>
   );
@@ -163,7 +169,8 @@ export const ComplianceGates: React.FC<{ period: PeriodReport }> = ({ period }) 
   <div>
     <GateRow first check={period.supervisionRatioCheck} title="Supervision ratio" value={period.supervisionRatioCheck.value ? pct(period.supervisionRatioCheck.value) : "—"} />
     <GateRow check={period.telehealthCheck} title="Telehealth cap" value={pct(period.telehealthCheck.value)} />
-    <GateRow check={period.caregiverTrainingCheck} title="Caregiver training" value={`${fmt(period.caregiverTrainingCheck.value)} hrs`} />
+    <GateRow check={period.caregiverTrainingCheck} title="Family training (3 hrs/family)" value={period.caregiverTrainingCheck.target > 0 ? `${period.caregiverTrainingCheck.value}/${period.caregiverTrainingCheck.target}` : "—"} />
+
   </div>
 );
 
@@ -297,8 +304,8 @@ export const CaseloadTable: React.FC<{ period: PeriodReport }> = ({ period }) =>
           <th>Direct 97153</th>
           <th>Supervision 97155</th>
           <th>Ratio</th>
-          <th>Caregiver 97156</th>
-          <th>You delivered</th>
+          <th>Family training</th>
+          <th>3 hr/qtr met</th>
         </tr>
       </thead>
       <tbody>
@@ -315,15 +322,11 @@ export const CaseloadTable: React.FC<{ period: PeriodReport }> = ({ period }) =>
               <td>{fmt(c.directHours)}</td>
               <td>{fmt(c.supervisionHours)}</td>
               <td>{c.supervisionRatio === null ? "—" : pct(c.supervisionRatio)}</td>
-              <td>{fmt(c.caregiverTrainingHours)}</td>
               <td>
-                {c.caregiverTrainingFlag === "OK" ? (
-                  <Chip kind="good">yes</Chip>
-                ) : c.caregiverTrainingFlag === "Did not deliver" ? (
-                  <Chip kind="warn">no</Chip>
-                ) : (
-                  <span style={{ color: "var(--ink3)" }}>—</span>
-                )}
+                {fmt(c.bcbaCaregiverHours)} / {fmt(c.caregiverRequiredHours)}
+              </td>
+              <td>
+                {c.caregiverMet ? <Chip kind="good">yes</Chip> : <Chip kind="warn">no</Chip>}
               </td>
             </tr>
           ))

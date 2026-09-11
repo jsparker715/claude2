@@ -78,23 +78,28 @@ test("metrics: client totals sum across team members; ratio + 97156 flag per BCB
     s({ client: "Client A", teamMember: "Dr. Sam", billingCode: "97155", durationHours: 2 }),
     s({ client: "Client A", teamMember: "Tech Joe", billingCode: "97156", durationHours: 1 }), // Sam did NOT deliver
   ];
-  const [m] = clientMetrics(sessions, "Dr. Sam", ["Client A"]);
+  const [m] = clientMetrics(sessions, "Dr. Sam", ["Client A"], 3, 3);
   assert.equal(m.directHours, 10);
   assert.equal(m.supervisionHours, 2);
   assert.equal(m.caregiverTrainingHours, 1);
   assert.equal(m.supervisionRatio, 0.2);
   assert.equal(m.caregiverTrainingFlag, "Did not deliver");
+  assert.equal(m.bcbaCaregiverHours, 0); // Sam delivered none for this family
+  assert.equal(m.caregiverRequiredHours, 3);
+  assert.equal(m.caregiverMet, false);
 
   const caseload = caseloadSupervisionRatio([m]);
   assert.equal(caseload.ratio, 0.2);
 });
 
-test("metrics: 97156 flag OK when the BCBA personally delivered it", () => {
+test("metrics: per-family caregiver hours + met when the BCBA delivers 3 hrs", () => {
   const sessions = [
-    s({ client: "Client A", teamMember: "Dr. Sam", billingCode: "97156", durationHours: 1 }),
+    s({ client: "Client A", teamMember: "Dr. Sam", billingCode: "97156", durationHours: 3 }),
   ];
-  const [m] = clientMetrics(sessions, "Dr. Sam", ["Client A"]);
+  const [m] = clientMetrics(sessions, "Dr. Sam", ["Client A"], 3, 3);
   assert.equal(m.caregiverTrainingFlag, "OK");
+  assert.equal(m.bcbaCaregiverHours, 3);
+  assert.equal(m.caregiverMet, true);
 });
 
 test("rollover: 50% of a Q1 deficit lands on Q2's target", () => {
@@ -237,6 +242,58 @@ test("bonus: caregiver-excess bonus is withheld until the billable minimum is me
   assert.equal(q2.bonus.amount, 0);
   assert.equal(q2.bonus.eligible, false);
   assert.ok(q2.bonus.blockedBy.some((b) => /billable requirement not met/i.test(b)));
+});
+
+test("zero-requirement month is excluded from excess/variance/bonus", () => {
+  const sessions: SessionRow[] = [
+    s({ client: "Client A", teamMember: "Dr. Sam", billingCode: "97155", durationHours: 30, date: "2026-04-10" }), // Apr req 0 -> excluded
+    s({ client: "Client A", teamMember: "Dr. Sam", billingCode: "97155", durationHours: 50, date: "2026-05-10" }),
+    s({ client: "Client A", teamMember: "Dr. Sam", billingCode: "97155", durationHours: 50, date: "2026-06-10" }),
+  ];
+  const report = buildBcbaReport({
+    sessions,
+    pto: [],
+    pairings: [{ bcba: "Dr. Sam", client: "Client A" }],
+    config: {
+      name: "Dr. Sam",
+      requiredHoursByMonth: { "2026-04": 0, "2026-05": 40, "2026-06": 40 },
+      targets: PLACEHOLDER_TARGETS,
+    },
+  });
+  const q2 = report.periods.find((p) => p.periodKey === "2026-Q2")!;
+  assert.equal(q2.billableHours, 130); // actual, for display
+  assert.equal(q2.qualifyingBillableHours, 100); // April's 30 excluded
+  assert.equal(q2.excludedZeroReqMonths, 1);
+  assert.equal(q2.requiredHours, 80); // only May + June
+  assert.equal(q2.variance, 20); // 100 - 80, not 130 - 80
+  assert.equal(q2.bonus.hoursOverTarget, 20);
+  assert.equal(q2.bonus.amount, 20 * 40);
+});
+
+test("caregiver is per-family: unmet when any family is short", () => {
+  const sessions: SessionRow[] = [
+    s({ client: "Client A", teamMember: "Dr. Sam", billingCode: "97156", durationHours: 3, date: "2026-04-10" }),
+    // Client B gets none from Sam.
+    s({ client: "Client B", teamMember: "Dr. Sam", billingCode: "97155", durationHours: 5, date: "2026-04-10" }),
+  ];
+  const report = buildBcbaReport({
+    sessions,
+    pto: [],
+    pairings: [
+      { bcba: "Dr. Sam", client: "Client A" },
+      { bcba: "Dr. Sam", client: "Client B" },
+    ],
+    config: { name: "Dr. Sam", requiredHoursByMonth: {}, targets: PLACEHOLDER_TARGETS },
+  });
+  const q2 = report.periods.find((p) => p.periodKey === "2026-Q2")!;
+  const cc = q2.caregiverTrainingCheck;
+  assert.equal(cc.met, false);
+  assert.equal(cc.value, 1); // 1 family met
+  assert.equal(cc.target, 2); // of 2 families
+  const a = q2.clients.find((c) => c.client === "Client A")!;
+  const b = q2.clients.find((c) => c.client === "Client B")!;
+  assert.equal(a.caregiverMet, true);
+  assert.equal(b.caregiverMet, false);
 });
 
 test("telehealth override: exempt client is excluded from the cap", () => {

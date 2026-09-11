@@ -16,6 +16,9 @@ export interface ClientMetrics {
   totalHours: number;
   supervisionRatio: number | null;
   caregiverTrainingFlag: "OK" | "Did not deliver" | "";
+  bcbaCaregiverHours: number;
+  caregiverRequiredHours: number;
+  caregiverMet: boolean;
 }
 
 export interface WeeklyRow {
@@ -56,6 +59,8 @@ export interface PeriodReport {
   label: string;
   months: string[];
   billableHours: number;
+  qualifyingBillableHours: number;
+  excludedZeroReqMonths: number;
   directHours: number;
   supervisionHours: number;
   caregiverTrainingHours: number;

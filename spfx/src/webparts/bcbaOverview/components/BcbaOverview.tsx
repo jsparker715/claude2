@@ -201,7 +201,7 @@ export default class BcbaOverview extends React.Component<IBcbaOverviewProps, IS
                 <th>Variance</th>
                 <th>Ratio</th>
                 <th>Telehealth</th>
-                <th>Caregiver</th>
+                <th>Families 3h</th>
                 <th>Bonus</th>
                 <th>Status</th>
               </tr>
@@ -247,7 +247,7 @@ export default class BcbaOverview extends React.Component<IBcbaOverviewProps, IS
                       </td>
                       {this.renderMetricCell(sc.value ? pct(sc.value) : "—", sc.met)}
                       {this.renderMetricCell(pct(tc.value), tc.met)}
-                      {this.renderMetricCell(`${fmt(cc.value)}`, cc.met)}
+                      {this.renderMetricCell(cc.target > 0 ? `${cc.value}/${cc.target}` : "—", cc.met)}
                       <td>{period.periodKind === "quarter" ? money(period.bonus.amount) : "—"}</td>
                       <td>
                         {attn ? (

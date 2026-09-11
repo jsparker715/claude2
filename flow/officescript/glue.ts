@@ -30,9 +30,14 @@ interface ScriptResult {
     sessionsCsvLength: number;
     sessionRows: number;
     datedSessionRows: number;
+    directRows97153: number;
+    supervisionRows97155: number;
+    caregiverRows97156: number;
     distinctTeamMembers: string[];
     bcbaNames: string[];
     ptoRows: number;
+    pairingClientCount: number;
+    sessionClientsNotInPairings: string[];
   };
 }
 
@@ -310,10 +315,18 @@ function main(workbook: ExcelScript.Workbook, sessionsCsv: string, ptoCsv: strin
 
   // Diagnostics so a single run reveals feed/column/name problems.
   let datedSessions = 0;
+  let rows97153 = 0;
+  let rows97155 = 0;
+  let rows97156 = 0;
   const teamMembers: { [k: string]: boolean } = {};
+  const sessionClients: { [k: string]: boolean } = {};
   for (const s of sessions) {
     if (s.date && /^\d{4}-\d{2}-\d{2}/.test(s.date)) datedSessions++;
     if (s.teamMember) teamMembers[s.teamMember] = true;
+    if (s.client) sessionClients[normalizeName(s.client)] = true;
+    if (s.billingCode === "97153") rows97153++;
+    else if (s.billingCode === "97155") rows97155++;
+    else if (s.billingCode === "97156") rows97156++;
   }
   if (sessions.length === 0 && sessionsText.trim() !== "") {
     warnings.push("Sessions text arrived but parsed to 0 rows — check the CSV header names.");
@@ -322,6 +335,15 @@ function main(workbook: ExcelScript.Workbook, sessionsCsv: string, ptoCsv: strin
     warnings.push("Sessions parsed but none had a readable session_start_date — check that column.");
   }
   const pairings = readPairings(workbook);
+  const pairingClientSet: { [k: string]: boolean } = {};
+  for (const p of pairings) pairingClientSet[normalizeName(p.client)] = true;
+  const unmatchedClients = Object.keys(sessionClients).filter((c) => !pairingClientSet[c]);
+  if (rows97153 > 0 && unmatchedClients.length > 0) {
+    warnings.push(
+      unmatchedClients.length +
+        " client name(s) in the sessions file don't match the Pairings sheet, so their hours (including 97153) don't count toward any BCBA's supervision ratio. See diagnostics.sessionClientsNotInPairings."
+    );
+  }
   const configs = readConfigs(workbook, warnings);
   const telehealthOverrideClients = readOverrides(workbook);
   const ptoNameOverrides = readNameOverrides(workbook);
@@ -350,9 +372,16 @@ function main(workbook: ExcelScript.Workbook, sessionsCsv: string, ptoCsv: strin
       sessionsCsvLength: sessionsText.length,
       sessionRows: sessions.length,
       datedSessionRows: datedSessions,
+      directRows97153: rows97153,
+      supervisionRows97155: rows97155,
+      caregiverRows97156: rows97156,
       distinctTeamMembers: Object.keys(teamMembers).slice(0, 40),
       bcbaNames: configs.map((c) => c.name),
       ptoRows: pto.length,
+      pairingClientCount: Object.keys(pairingClientSet).length,
+      sessionClientsNotInPairings: Object.keys(sessionClients)
+        .filter((c) => !pairingClientSet[c])
+        .slice(0, 40),
     },
   };
 }

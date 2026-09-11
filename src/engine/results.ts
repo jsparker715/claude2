@@ -10,12 +10,18 @@ export interface ClientMetrics {
   client: string;
   directHours: number; // 97153
   supervisionHours: number; // 97155
-  caregiverTrainingHours: number; // 97156
+  caregiverTrainingHours: number; // 97156 total (all providers)
   totalHours: number; // all codes
   /** 97155 / 97153, as a fraction. null when directHours == 0. */
   supervisionRatio: number | null;
   /** "OK" | "Did not deliver" | "" — did THIS bcba personally deliver the 97156 for this client this period. */
   caregiverTrainingFlag: "OK" | "Did not deliver" | "";
+  /** 97156 hours THIS bcba personally delivered to this family (drives the per-family requirement). */
+  bcbaCaregiverHours: number;
+  /** Required family-training hours for this client this period (3/quarter, pro-rated). */
+  caregiverRequiredHours: number;
+  /** Did this family get its required caregiver-training hours from the BCBA. */
+  caregiverMet: boolean;
 }
 
 /** One row of the week-by-week breakdown. */
@@ -49,6 +55,14 @@ export interface PeriodReport {
 
   // Hours personally delivered by the BCBA this period.
   billableHours: number;
+  /**
+   * Billable hours counted toward the requirement/variance/bonus — excludes any
+   * month whose billable requirement is 0 (those months don't help or hurt).
+   * Equals billableHours when no month in the period has a 0 requirement.
+   */
+  qualifyingBillableHours: number;
+  /** How many months in this period were excluded for having a 0 requirement. */
+  excludedZeroReqMonths: number;
   directHours: number;
   supervisionHours: number;
   caregiverTrainingHours: number;

@@ -299,12 +299,18 @@ interface ClientMetrics {
   client: string;
   directHours: number; // 97153
   supervisionHours: number; // 97155
-  caregiverTrainingHours: number; // 97156
+  caregiverTrainingHours: number; // 97156 total (all providers)
   totalHours: number; // all codes
   /** 97155 / 97153, as a fraction. null when directHours == 0. */
   supervisionRatio: number | null;
   /** "OK" | "Did not deliver" | "" — did THIS bcba personally deliver the 97156 for this client this period. */
   caregiverTrainingFlag: "OK" | "Did not deliver" | "";
+  /** 97156 hours THIS bcba personally delivered to this family (drives the per-family requirement). */
+  bcbaCaregiverHours: number;
+  /** Required family-training hours for this client this period (3/quarter, pro-rated). */
+  caregiverRequiredHours: number;
+  /** Did this family get its required caregiver-training hours from the BCBA. */
+  caregiverMet: boolean;
 }
 
 /** One row of the week-by-week breakdown. */
@@ -338,6 +344,14 @@ interface PeriodReport {
 
   // Hours personally delivered by the BCBA this period.
   billableHours: number;
+  /**
+   * Billable hours counted toward the requirement/variance/bonus — excludes any
+   * month whose billable requirement is 0 (those months don't help or hurt).
+   * Equals billableHours when no month in the period has a 0 requirement.
+   */
+  qualifyingBillableHours: number;
+  /** How many months in this period were excluded for having a 0 requirement. */
+  excludedZeroReqMonths: number;
   directHours: number;
   supervisionHours: number;
   caregiverTrainingHours: number;
@@ -597,17 +611,24 @@ function personalAggregate(sessions: SessionRow[], bcba: string): PersonalAggreg
 function clientMetrics(
   sessions: SessionRow[],
   bcba: string,
-  assignedClients: string[]
+  assignedClients: string[],
+  caregiverHoursPerQuarter: number,
+  monthsCovered: number
 ): ClientMetrics[] {
   const target = normalizeName(bcba);
   const wanted = new Map<string, string>(); // normalized -> display
   for (const c of assignedClients) wanted.set(normalizeName(c), c);
 
+  // Required family-training hours this period: 3/quarter, pro-rated by months.
+  const quarterEquivalents = monthsCovered > 0 ? monthsCovered / 3 : 1;
+  const caregiverRequired = caregiverHoursPerQuarter * quarterEquivalents;
+
   interface Acc {
     display: string;
     direct: number;
     supervision: number;
-    caregiver: number;
+    caregiver: number; // all providers
+    bcbaCaregiver: number; // this BCBA only
     total: number;
     bcbaDeliveredCaregiver: boolean;
   }
@@ -618,6 +639,7 @@ function clientMetrics(
       direct: 0,
       supervision: 0,
       caregiver: 0,
+      bcbaCaregiver: 0,
       total: 0,
       bcbaDeliveredCaregiver: false,
     });
@@ -633,7 +655,10 @@ function clientMetrics(
     else if (s.billingCode === CODE_SUPERVISION) acc.supervision += hrs;
     else if (s.billingCode === CODE_CAREGIVER_TRAINING) {
       acc.caregiver += hrs;
-      if (normalizeName(s.teamMember) === target && hrs > 0) acc.bcbaDeliveredCaregiver = true;
+      if (normalizeName(s.teamMember) === target && hrs > 0) {
+        acc.bcbaDeliveredCaregiver = true;
+        acc.bcbaCaregiver += hrs;
+      }
     }
   }
 
@@ -649,6 +674,9 @@ function clientMetrics(
       totalHours: acc.total,
       supervisionRatio: acc.direct > 0 ? acc.supervision / acc.direct : null,
       caregiverTrainingFlag: flag,
+      bcbaCaregiverHours: acc.bcbaCaregiver,
+      caregiverRequiredHours: caregiverRequired,
+      caregiverMet: acc.bcbaCaregiver >= caregiverRequired - 1e-9,
     });
   }
   out.sort((a, b) => a.client.localeCompare(b.client));
@@ -768,25 +796,28 @@ function telehealthCheck(
 }
 
 /**
- * Caregiver-training (97156) hours must meet the target scaled to how much of a
- * quarter the period represents: months = target/3, a full quarter = target,
- * multi-quarter (YTD/all) scales up by the number of months / 3.
+ * Caregiver training is PER FAMILY: every assigned client's family must get the
+ * required caregiver-training hours (3/quarter, pro-rated) from the BCBA. The
+ * check passes only when all families are met. `value` = families met,
+ * `target` = families total.
  */
-function caregiverTrainingCheck(
-  hoursDelivered: number,
-  monthsCovered: number,
-  t: ComplianceTargets
-): ComplianceCheck {
+function caregiverTrainingCheck(clients: ClientMetrics[], perQuarter: number, monthsCovered: number): ComplianceCheck {
   const quarterEquivalents = monthsCovered > 0 ? monthsCovered / 3 : 1;
-  const target = t.caregiverTrainingHoursPerQuarter * quarterEquivalents;
-  const met = hoursDelivered >= target - 1e-9;
+  const perFamily = perQuarter * quarterEquivalents;
+  const total = clients.length;
+  const met = clients.filter((c) => c.caregiverMet).length;
+  if (total === 0) {
+    return { value: 0, target: 0, met: true, detail: "No assigned families this period." };
+  }
+  const shortfalls = clients.filter((c) => !c.caregiverMet).map((c) => c.client);
+  const allMet = met === total;
   return {
-    value: hoursDelivered,
-    target,
-    met,
-    detail: met
-      ? `${hoursDelivered.toFixed(1)} hrs meets the ${target.toFixed(1)} hr target.`
-      : `${hoursDelivered.toFixed(1)} of ${target.toFixed(1)} required caregiver-training hrs.`,
+    value: met,
+    target: total,
+    met: allMet,
+    detail: allMet
+      ? `All ${total} famil${total === 1 ? "y" : "ies"} met the ${perFamily.toFixed(1)} hr/family target.`
+      : `${met} of ${total} families met the ${perFamily.toFixed(1)} hr/family target. Behind: ${shortfalls.join(", ")}.`,
   };
 }
 
@@ -882,9 +913,11 @@ function computeRollover(
  */
 
 interface BonusInputs {
+  /** Qualifying billable hours (0-requirement months already excluded). */
   billableHours: number;
   effectiveRequiredHours: number | null;
-  caregiverTrainingHours: number;
+  /** Sum over families of caregiver hours above the per-family base (already computed). */
+  caregiverExcessHours: number;
 }
 
 function zeroBonus(): BonusResult {
@@ -911,14 +944,15 @@ function computeBonus(inp: BonusInputs, cfg: BonusConfig): BonusResult {
     });
   }
 
-  // B) caregiver-training hours above the base, gated on the billable minimum
-  const caregiverExcess = Math.max(0, inp.caregiverTrainingHours - cfg.caregiverBonusBaseHours);
+  // B) caregiver-training hours above the per-family base (summed), gated on the
+  //    billable minimum.
+  const caregiverExcess = Math.max(0, inp.caregiverExcessHours);
   if (caregiverExcess > 0 && cfg.caregiverExcessRate > 0) {
     if (!cfg.caregiverBonusRequiresBillableMet || billableMet) {
       const line = caregiverExcess * cfg.caregiverExcessRate;
       amount += line;
       breakdown.push({
-        label: `Caregiver training over ${cfg.caregiverBonusBaseHours} hrs`,
+        label: `Caregiver training over ${cfg.caregiverBonusBaseHours} hrs/family`,
         detail: `${caregiverExcess.toFixed(1)} hrs × $${cfg.caregiverExcessRate.toFixed(0)}/hr`,
         amount: line,
       });
@@ -1055,18 +1089,6 @@ function telehealthShare(
   return total > 0 ? telehealth / total : 0;
 }
 
-function requiredForMonths(cfg: BcbaConfig, months: string[]): number | null {
-  let sum = 0;
-  let any = false;
-  for (const m of months) {
-    if (Object.prototype.hasOwnProperty.call(cfg.requiredHoursByMonth, m)) {
-      sum += cfg.requiredHoursByMonth[m];
-      any = true;
-    }
-  }
-  return any ? sum : null;
-}
-
 function buildBcbaReport(input: EngineInput): BcbaReport {
   const opt = resolveOptions(input.options);
   const bcba = normalizeName(input.config.name);
@@ -1107,14 +1129,25 @@ function buildBcbaReport(input: EngineInput): BcbaReport {
     supRatio: number | null;
     ptoHours: number;
     baseRequired: number | null;
+    qualifyingBillable: number;
+    excludedZeroReqMonths: number;
+    caregiverExcess: number;
     supCheck: ComplianceCheck;
     teleCheck: ComplianceCheck;
     caregiverCheck: ComplianceCheck;
   }
+  const reqByMonth = input.config.requiredHoursByMonth || {};
   const raws: Raw[] = periods.map((def) => {
     const periodSessions = input.sessions.filter((s) => sessionInPeriod(s, def));
     const personal = personalAggregate(periodSessions, bcba);
-    const clients = clientMetrics(periodSessions, bcba, assignedClients);
+    const monthsCovered = def.kind === "all" ? def.months.length || 3 : def.months.length;
+    const clients = clientMetrics(
+      periodSessions,
+      bcba,
+      assignedClients,
+      targets.caregiverTrainingHoursPerQuarter,
+      monthsCovered
+    );
 
     // Supervision ratio basis.
     let supRatio: number | null;
@@ -1133,8 +1166,30 @@ function buildBcbaReport(input: EngineInput): BcbaReport {
     });
 
     const ptoHours = ptoForMonths(ptoByMonth, def.months);
-    const baseRequired = requiredForMonths(input.config, def.months);
-    const monthsCovered = def.kind === "all" ? def.months.length || 3 : def.months.length;
+
+    // Zero-requirement months don't count toward requirement, excess, or bonus.
+    const qualifyingMonths = def.months.filter((m) => (reqByMonth[m] || 0) > 0);
+    const qSet: { [k: string]: boolean } = {};
+    for (const m of qualifyingMonths) qSet[m] = true;
+    const baseRequired = qualifyingMonths.length
+      ? qualifyingMonths.reduce((sum, m) => sum + (reqByMonth[m] || 0), 0)
+      : null;
+    const qualifyingSessions = periodSessions.filter((s) => {
+      const d = parseISODate(s.date);
+      return d ? !!qSet[monthKey(d)] : false;
+    });
+    const qualifyingBillable = personalAggregate(qualifyingSessions, bcba).billableHours;
+    const excludedZeroReqMonths = def.months.filter(
+      (m) => Object.prototype.hasOwnProperty.call(reqByMonth, m) && reqByMonth[m] === 0
+    ).length;
+
+    // Per-family caregiver excess for the bonus (summed across families).
+    const quarterEquivalents = monthsCovered > 0 ? monthsCovered / 3 : 1;
+    const perFamilyBonusBase = opt.bonus.caregiverBonusBaseHours * quarterEquivalents;
+    const caregiverExcess = clients.reduce(
+      (sum, c) => sum + Math.max(0, c.bcbaCaregiverHours - perFamilyBonusBase),
+      0
+    );
 
     return {
       def,
@@ -1143,26 +1198,29 @@ function buildBcbaReport(input: EngineInput): BcbaReport {
       supRatio,
       ptoHours,
       baseRequired,
+      qualifyingBillable,
+      excludedZeroReqMonths,
+      caregiverExcess,
       supCheck: supervisionRatioCheck(supRatio, targets),
       teleCheck: telehealthCheck(teleShare, targets, exemptAssignedCount),
-      caregiverCheck: caregiverTrainingCheck(personal.caregiverTrainingHours, monthsCovered, targets),
+      caregiverCheck: caregiverTrainingCheck(clients, targets.caregiverTrainingHoursPerQuarter, monthsCovered),
     };
   });
 
-  // Phase 2: quarterly rollover.
+  // Phase 2: quarterly rollover (uses qualifying billable).
   const quarterInputs: QuarterInput[] = raws
     .filter((r) => r.def.kind === "quarter")
     .map((r) => ({
       quarterKey: r.def.key,
       baseRequired: r.baseRequired,
-      billable: r.personal.billableHours,
+      billable: r.qualifyingBillable,
     }));
   const rollover = computeRollover(quarterInputs, opt.rolloverFraction, opt.rolloverCapHours);
 
   // Phase 3: assemble period reports (+ bonus on quarters).
   const periodReports: PeriodReport[] = raws.map((r) => {
     let effectiveRequired = r.baseRequired;
-    let variance = r.baseRequired === null ? null : r.personal.billableHours - r.baseRequired;
+    let variance = r.baseRequired === null ? null : r.qualifyingBillable - r.baseRequired;
     let rolledIn = 0;
     let rollingOut = 0;
 
@@ -1180,9 +1238,9 @@ function buildBcbaReport(input: EngineInput): BcbaReport {
       r.def.kind === "quarter"
         ? computeBonus(
             {
-              billableHours: r.personal.billableHours,
+              billableHours: r.qualifyingBillable,
               effectiveRequiredHours: effectiveRequired,
-              caregiverTrainingHours: r.personal.caregiverTrainingHours,
+              caregiverExcessHours: r.caregiverExcess,
             },
             opt.bonus
           )
@@ -1194,6 +1252,8 @@ function buildBcbaReport(input: EngineInput): BcbaReport {
       label: r.def.label,
       months: r.def.months.slice(),
       billableHours: r.personal.billableHours,
+      qualifyingBillableHours: r.qualifyingBillable,
+      excludedZeroReqMonths: r.excludedZeroReqMonths,
       directHours: r.personal.directHours,
       supervisionHours: r.personal.supervisionHours,
       caregiverTrainingHours: r.personal.caregiverTrainingHours,
@@ -1278,9 +1338,14 @@ interface ScriptResult {
     sessionsCsvLength: number;
     sessionRows: number;
     datedSessionRows: number;
+    directRows97153: number;
+    supervisionRows97155: number;
+    caregiverRows97156: number;
     distinctTeamMembers: string[];
     bcbaNames: string[];
     ptoRows: number;
+    pairingClientCount: number;
+    sessionClientsNotInPairings: string[];
   };
 }
 
@@ -1558,10 +1623,18 @@ function main(workbook: ExcelScript.Workbook, sessionsCsv: string, ptoCsv: strin
 
   // Diagnostics so a single run reveals feed/column/name problems.
   let datedSessions = 0;
+  let rows97153 = 0;
+  let rows97155 = 0;
+  let rows97156 = 0;
   const teamMembers: { [k: string]: boolean } = {};
+  const sessionClients: { [k: string]: boolean } = {};
   for (const s of sessions) {
     if (s.date && /^\d{4}-\d{2}-\d{2}/.test(s.date)) datedSessions++;
     if (s.teamMember) teamMembers[s.teamMember] = true;
+    if (s.client) sessionClients[normalizeName(s.client)] = true;
+    if (s.billingCode === "97153") rows97153++;
+    else if (s.billingCode === "97155") rows97155++;
+    else if (s.billingCode === "97156") rows97156++;
   }
   if (sessions.length === 0 && sessionsText.trim() !== "") {
     warnings.push("Sessions text arrived but parsed to 0 rows — check the CSV header names.");
@@ -1570,6 +1643,15 @@ function main(workbook: ExcelScript.Workbook, sessionsCsv: string, ptoCsv: strin
     warnings.push("Sessions parsed but none had a readable session_start_date — check that column.");
   }
   const pairings = readPairings(workbook);
+  const pairingClientSet: { [k: string]: boolean } = {};
+  for (const p of pairings) pairingClientSet[normalizeName(p.client)] = true;
+  const unmatchedClients = Object.keys(sessionClients).filter((c) => !pairingClientSet[c]);
+  if (rows97153 > 0 && unmatchedClients.length > 0) {
+    warnings.push(
+      unmatchedClients.length +
+        " client name(s) in the sessions file don't match the Pairings sheet, so their hours (including 97153) don't count toward any BCBA's supervision ratio. See diagnostics.sessionClientsNotInPairings."
+    );
+  }
   const configs = readConfigs(workbook, warnings);
   const telehealthOverrideClients = readOverrides(workbook);
   const ptoNameOverrides = readNameOverrides(workbook);
@@ -1598,9 +1680,16 @@ function main(workbook: ExcelScript.Workbook, sessionsCsv: string, ptoCsv: strin
       sessionsCsvLength: sessionsText.length,
       sessionRows: sessions.length,
       datedSessionRows: datedSessions,
+      directRows97153: rows97153,
+      supervisionRows97155: rows97155,
+      caregiverRows97156: rows97156,
       distinctTeamMembers: Object.keys(teamMembers).slice(0, 40),
       bcbaNames: configs.map((c) => c.name),
       ptoRows: pto.length,
+      pairingClientCount: Object.keys(pairingClientSet).length,
+      sessionClientsNotInPairings: Object.keys(sessionClients)
+        .filter((c) => !pairingClientSet[c])
+        .slice(0, 40),
     },
   };
 }

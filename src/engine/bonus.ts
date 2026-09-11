@@ -15,9 +15,11 @@ import { BonusConfig } from "./types";
 import { BonusResult, BonusLine } from "./results";
 
 export interface BonusInputs {
+  /** Qualifying billable hours (0-requirement months already excluded). */
   billableHours: number;
   effectiveRequiredHours: number | null;
-  caregiverTrainingHours: number;
+  /** Sum over families of caregiver hours above the per-family base (already computed). */
+  caregiverExcessHours: number;
 }
 
 export function zeroBonus(): BonusResult {
@@ -44,14 +46,15 @@ export function computeBonus(inp: BonusInputs, cfg: BonusConfig): BonusResult {
     });
   }
 
-  // B) caregiver-training hours above the base, gated on the billable minimum
-  const caregiverExcess = Math.max(0, inp.caregiverTrainingHours - cfg.caregiverBonusBaseHours);
+  // B) caregiver-training hours above the per-family base (summed), gated on the
+  //    billable minimum.
+  const caregiverExcess = Math.max(0, inp.caregiverExcessHours);
   if (caregiverExcess > 0 && cfg.caregiverExcessRate > 0) {
     if (!cfg.caregiverBonusRequiresBillableMet || billableMet) {
       const line = caregiverExcess * cfg.caregiverExcessRate;
       amount += line;
       breakdown.push({
-        label: `Caregiver training over ${cfg.caregiverBonusBaseHours} hrs`,
+        label: `Caregiver training over ${cfg.caregiverBonusBaseHours} hrs/family`,
         detail: `${caregiverExcess.toFixed(1)} hrs × $${cfg.caregiverExcessRate.toFixed(0)}/hr`,
         amount: line,
       });
