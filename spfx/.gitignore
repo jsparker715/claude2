@@ -9,3 +9,6 @@ solution/
 .heft/
 *.log
 .tmp/
+
+# Generated SCSS module typings
+*.module.scss.ts

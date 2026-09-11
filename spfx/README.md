@@ -22,9 +22,17 @@ never be the security boundary. This one deliberately:
 
 ## Requirements
 
-- **Node 18.17.1+ or 20.x** (SPFx 1.20 toolchain — not Node 22; use `nvm`).
+- **Node 18.17.1+ or 22.14+** (SPFx 1.21 toolchain).
 - Gulp CLI is invoked via the local `gulp` dev dependency.
 - A SharePoint Online tenant with an App Catalog.
+
+## Getting the `.sppkg` without any local setup
+
+Push to GitHub and run the **Build SharePoint package (.sppkg)** action
+(`.github/workflows/build-spfx.yml`) from the repo's **Actions** tab → *Run
+workflow*. When it finishes, download **bcba-compliance-sppkg** from the run's
+Artifacts — that's the file you upload to the App Catalog. No Node/gulp on your
+machine required.
 
 ## Develop
 
@@ -86,9 +94,10 @@ src/webparts/bcbaCompliance/
   loc/                              localized strings
 ```
 
-## Not runnable in this repo's cloud session
+## Build status
 
-This project targets the SPFx toolchain (specific Node + gulp) and a SharePoint
-tenant, so it isn't built/served here. The TypeScript has been typechecked against
-SPFx-shaped stubs; build and serve it in your own environment per the steps above.
+The package builds clean with `npm run package` on Node 22 (SPFx 1.21.1) and
+produces `sharepoint/solution/bcba-compliance-webpart.sppkg`. `gulp serve`
+(local workbench) needs a SharePoint site URL in `config/serve.json` and a
+browser, so run that in your own environment.
 ```

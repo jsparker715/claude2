@@ -1,0 +1,47 @@
+name: Build SharePoint package (.sppkg)
+
+# Produces the file you upload to the SharePoint App Catalog, in the cloud —
+# no local setup needed. Run it from the Actions tab (Run workflow), then
+# download "bcba-compliance-sppkg" from the run's Artifacts.
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: ["**"]
+    paths:
+      - "spfx/**"
+      - "src/engine/**"
+      - ".github/workflows/build-spfx.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node 22 (SPFx 1.21 supports 22.14+)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Refresh bundled sample data from the engine
+        run: |
+          npm ci || npm install
+          npm run build
+          node prototype/generate-sample.js
+          node spfx/scripts/sync-engine-types.js
+
+      - name: Install web part dependencies
+        working-directory: spfx
+        run: npm install --no-audit --no-fund
+
+      - name: Build & package (ship)
+        working-directory: spfx
+        run: npm run package
+
+      - name: Upload the .sppkg
+        uses: actions/upload-artifact@v4
+        with:
+          name: bcba-compliance-sppkg
+          path: spfx/sharepoint/solution/*.sppkg
+          if-no-files-found: error

@@ -7,7 +7,7 @@ import {
   PropertyPaneToggle,
 } from "@microsoft/sp-property-pane";
 import { BaseClientSideWebPart } from "@microsoft/sp-webpart-base";
-import { ThemeProvider, ThemeChangedEventArgs, IReadonlyTheme } from "@microsoft/sp-component-base";
+import { IReadonlyTheme } from "@microsoft/sp-component-base";
 
 import * as strings from "BcbaComplianceWebPartStrings";
 import BcbaCompliance from "./components/BcbaCompliance";
@@ -19,21 +19,10 @@ export interface IBcbaComplianceWebPartProps {
 }
 
 export default class BcbaComplianceWebPart extends BaseClientSideWebPart<IBcbaComplianceWebPartProps> {
-  private themeProvider: ThemeProvider | undefined;
   private isDarkTheme = false;
 
-  protected onInit(): Promise<void> {
-    const themeProvider: ThemeProvider = this.context.serviceScope.consume(ThemeProvider.serviceKey);
-    this.themeProvider = themeProvider;
-    const theme = themeProvider.tryGetTheme();
-    this.isDarkTheme = !!(theme && theme.isInverted);
-    themeProvider.themeChangedEvent.add(this, this.onThemeChanged);
-    return Promise.resolve();
-  }
-
-  private onThemeChanged(args: ThemeChangedEventArgs): void {
-    const theme: IReadonlyTheme | undefined = args.theme;
-    this.isDarkTheme = !!(theme && theme.isInverted);
+  protected onThemeChanged(currentTheme: IReadonlyTheme | undefined): void {
+    this.isDarkTheme = !!(currentTheme && currentTheme.isInverted);
     this.render();
   }
 
