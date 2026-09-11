@@ -1,0 +1,122 @@
+/* Overview-specific classes. Colors come from the shared design tokens
+   (--ink, --accent, …) set by the shared `.root` wrapper this renders inside. */
+
+.head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+.head h1 {
+  font-size: 24px;
+  font-weight: 700;
+  margin: 0;
+  letter-spacing: -0.01em;
+}
+.head .sub {
+  font-size: 12px;
+  color: var(--ink3);
+}
+
+.strip {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin: 16px 0;
+}
+@media (max-width: 700px) {
+  .strip {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+.stat {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 14px;
+  box-shadow: var(--shadow);
+}
+.stat .k {
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink3);
+}
+.stat .v {
+  font-size: 24px;
+  font-weight: 800;
+  margin-top: 4px;
+  letter-spacing: -0.02em;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 10px 0;
+}
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  color: var(--ink2);
+  cursor: pointer;
+  user-select: none;
+}
+.spacer {
+  flex: 1;
+}
+
+.nameBtn {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+}
+.nameBtn:hover {
+  text-decoration: underline;
+}
+.rowAttention td:first-child {
+  box-shadow: inset 3px 0 0 var(--bad);
+}
+.totalRow td {
+  border-top: 1.5px solid var(--borderStrong) !important;
+  font-weight: 700;
+}
+
+.backBtn {
+  background: none;
+  border: 0;
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 0;
+  margin-bottom: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: inherit;
+}
+.backBtn:hover {
+  text-decoration: underline;
+}
+.detailName {
+  font-size: 22px;
+  font-weight: 800;
+  margin: 4px 0 2px;
+  letter-spacing: -0.01em;
+}
+.detailEmail {
+  font-size: 12.5px;
+  color: var(--ink3);
+}

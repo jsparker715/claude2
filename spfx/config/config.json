@@ -9,10 +9,19 @@
           "manifest": "./src/webparts/bcbaCompliance/BcbaComplianceWebPart.manifest.json"
         }
       ]
+    },
+    "bcba-overview-web-part": {
+      "components": [
+        {
+          "entrypoint": "./lib/webparts/bcbaOverview/BcbaOverviewWebPart.js",
+          "manifest": "./src/webparts/bcbaOverview/BcbaOverviewWebPart.manifest.json"
+        }
+      ]
     }
   },
   "externals": {},
   "localizedResources": {
-    "BcbaComplianceWebPartStrings": "lib/webparts/bcbaCompliance/loc/{locale}.js"
+    "BcbaComplianceWebPartStrings": "lib/webparts/bcbaCompliance/loc/{locale}.js",
+    "BcbaOverviewWebPartStrings": "lib/webparts/bcbaOverview/loc/{locale}.js"
   }
 }

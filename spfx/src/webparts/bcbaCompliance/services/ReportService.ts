@@ -61,6 +61,41 @@ export class ReportService {
     };
   }
 
+  /**
+   * Load ALL report rows (for the admin overview). SharePoint permission-trims
+   * this: an admin gets every row; a non-admin gets only their own. So this is
+   * safe to call from any page — the overview page itself should still be
+   * restricted to admins so BCBAs never even see it.
+   */
+  public async getAllReports(): Promise<ILoadedReport[]> {
+    const out: ILoadedReport[] = [];
+    let url: string | null = this.list(
+      "items?$select=Id,ReportJson,Notes,GeneratedAt,UserEmail&$orderby=Title&$top=200"
+    );
+    // Follow paging in case there are many rows.
+    while (url) {
+      const resp: SPHttpClientResponse = await this.spHttpClient.get(url, SPHttpClient.configurations.v1);
+      if (!resp.ok) throw new Error(`Could not load reports (${resp.status} ${resp.statusText}).`);
+      const data = await resp.json();
+      const rows = (data && data.value) || [];
+      for (const item of rows) {
+        try {
+          const report = JSON.parse(item.ReportJson) as BcbaReport;
+          out.push({
+            itemId: item.Id,
+            report,
+            notes: item.Notes || report.notes || "",
+            generatedAt: item.GeneratedAt || report.generatedAt || null,
+          });
+        } catch (e) {
+          // Skip an unreadable row rather than failing the whole overview.
+        }
+      }
+      url = (data && (data["odata.nextLink"] || data["@odata.nextLink"])) || null;
+    }
+    return out;
+  }
+
   /** Save the BCBA's notes back to their own item. */
   public async saveNotes(itemId: number, notes: string): Promise<void> {
     const url = this.list(`items(${itemId})`);

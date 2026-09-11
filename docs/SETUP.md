@@ -64,6 +64,19 @@ This is what replaces your manual spreadsheet-and-email marathon.
 On the site, edit a page (or make a new one), click **+**, and add the
 **BCBA Compliance** web part. Save and publish. That's the page BCBAs bookmark.
 
+### 6. (Admin) Add your overview page
+The package also includes **BCBA Compliance — Overview (admin)** — a roll-up
+table of every BCBA for a chosen period, with click-through to each person's full
+detail, a "needs attention" filter, and team totals.
+
+1. Create a **separate page** (e.g. "Compliance — Admin") and add the
+   **BCBA Compliance — Overview (admin)** web part to it.
+2. **Restrict that page/site to admins.** The overview shows everyone, so only you
+   and your clinical managers should be able to open it. (Even if a BCBA did open
+   it, SharePoint's per-row locking means they'd only see their own line — but
+   keep the page admin-only so it isn't in their way.)
+3. Do **not** put the overview web part on the page BCBAs use.
+
 ---
 
 ## Part B — Every month (the whole routine)

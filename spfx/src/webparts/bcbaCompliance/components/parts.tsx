@@ -445,3 +445,61 @@ function niceStep(scale: number): number {
   const s = n < 1.5 ? 1 : n < 3 ? 2 : n < 7 ? 5 : 10;
   return s * pow;
 }
+
+/**
+ * The full per-BCBA detail (KPIs, gates, bonus, rollover, weekly chart, caseload)
+ * for one period. Reused by the single-BCBA web part and the admin overview's
+ * drill-down. No data loading, no notes — pure presentation.
+ */
+export const ReportSections: React.FC<{
+  report: BcbaReport;
+  period: PeriodReport;
+  onSelectPeriod: (key: string) => void;
+}> = ({ report, period, onSelectPeriod }) => {
+  const showRollover =
+    period.periodKind === "quarter" && (period.rolledInHours > 0 || period.rollingOutHours > 0);
+  return (
+    <>
+      <PeriodPills periods={report.periods} selected={period.periodKey} onSelect={onSelectPeriod} />
+      <KpiTiles period={period} />
+      <div className={styles.grid2}>
+        <div className={styles.card}>
+          <h2>Compliance requirements</h2>
+          <p className={styles.hint}>Evaluated for the selected period against practice targets.</p>
+          <ComplianceGates period={period} />
+        </div>
+        <div className={styles.card}>
+          <h2>Quarterly bonus</h2>
+          <BonusCard report={report} period={period} />
+        </div>
+      </div>
+      {showRollover ? (
+        <>
+          <div className={styles.sectionHead}>
+            <h2>Deficit rollover</h2>
+          </div>
+          <div className={styles.card}>
+            <p className={styles.hint}>
+              When a quarter ends below target, <b>50% of the deficit</b> is added to the next quarter&rsquo;s target.
+            </p>
+            <RolloverFlow period={period} />
+          </div>
+        </>
+      ) : null}
+      <div className={styles.sectionHead}>
+        <h2>Week by week</h2>
+        <span className={styles.eyebrow}>Billable hours personally delivered</span>
+      </div>
+      <div className={styles.card}>
+        <WeeklyChart report={report} period={period} />
+      </div>
+      <div className={styles.sectionHead}>
+        <h2>Caseload detail</h2>
+        <span className={styles.eyebrow}>{period.label}</span>
+      </div>
+      <div className={styles.card}>
+        <CaseloadTable period={period} />
+      </div>
+    </>
+  );
+};
