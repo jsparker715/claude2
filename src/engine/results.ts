@@ -44,6 +44,8 @@ export interface PeriodReport {
   periodKey: string; // "YYYY-MM" | "YYYY-Qn" | "YYYY-YTD" | "ALL"
   periodKind: "month" | "quarter" | "ytd" | "all";
   label: string;
+  /** The "YYYY-MM" month keys this period covers (empty for "all", which spans everything). */
+  months: string[];
 
   // Hours personally delivered by the BCBA this period.
   billableHours: number;

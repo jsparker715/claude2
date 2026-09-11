@@ -212,6 +212,7 @@ export function buildBcbaReport(input: EngineInput): BcbaReport {
       periodKey: r.def.key,
       periodKind: r.def.kind,
       label: r.def.label,
+      months: r.def.months.slice(),
       billableHours: r.personal.billableHours,
       directHours: r.personal.directHours,
       supervisionHours: r.personal.supervisionHours,

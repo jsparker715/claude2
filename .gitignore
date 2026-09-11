@@ -2,3 +2,7 @@ node_modules/
 dist/
 *.log
 .DS_Store
+
+# Generated prototype build artifacts (reproduce with prototype/build.js)
+prototype/sample-reports.json
+prototype/dashboard.html
