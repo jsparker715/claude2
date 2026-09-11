@@ -3,7 +3,7 @@
   "solution": {
     "name": "bcba-compliance-webpart-client-side-solution",
     "id": "336e9fd2-1636-4ee3-ad0f-d0490362ceb7",
-    "version": "0.1.0.0",
+    "version": "0.1.1.0",
     "includeClientSideAssets": true,
     "skipFeatureDeployment": true,
     "isDomainIsolated": false,
@@ -30,7 +30,7 @@
         "title": "BCBA Compliance Web Part",
         "description": "Deploys the BCBA compliance dashboard web part.",
         "id": "3c04b1df-b8e1-4dd7-8734-3e5964b07215",
-        "version": "0.1.0.0"
+        "version": "0.1.1.0"
       }
     ]
   },
