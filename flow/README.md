@@ -104,7 +104,17 @@ JSON escaping.
 - Filter Query: `UserEmail eq '@{items('Apply_to_each')?['email']}'`
 - Top Count: `1`
 
-**(b) Condition** — `length(body('Get_existing')?['value'])` is greater than `0`.
+**(b) Condition** — does a row already exist? Add a **Condition**, click
+**Edit in advanced mode**, and paste this single expression (the visual builder
+mis-types `length(...)` as text vs. the number 0 and errors — advanced mode
+avoids that):
+
+```
+@greater(length(body('Get_existing')?['value']), 0)
+```
+
+> Replace `Get_existing` with your Get items action's real name (spaces become
+> underscores — e.g. a "Get items" action is `body('Get_items')?['value']`).
 
 **If yes (update — preserves Notes):** SharePoint **Update item**
 - List: `BCBA Reports`; Id: `@{first(body('Get_existing')?['value'])?['ID']}`
