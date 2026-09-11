@@ -78,7 +78,7 @@ in three places:
 1. **Unit tests** here (`npm test`) — proves the math.
 2. **The Office Script** the Power Automate flow runs monthly — produces the
    reports. (Office Scripts are TypeScript; the engine is bundled into one script
-   file — see `docs/DEPLOYMENT.md`.)
+   file — see `flow/README.md`.)
 3. **The SPFx web part** — can re-run or validate client-side against the same
    logic if ever needed, but normally just renders the stored result.
 

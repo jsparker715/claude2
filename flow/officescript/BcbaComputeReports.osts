@@ -1,0 +1,1505 @@
+/* ============================================================================
+ * BcbaComputeReports — GENERATED Office Script. DO NOT EDIT BY HAND.
+ * Rebuild with: node flow/build-officescript.js
+ * Bundles src/engine/* (the unit-tested engine) + flow/officescript/glue.ts.
+ * Paste the whole file into a new Office Script (Excel > Automate > New Script).
+ * ==========================================================================*/
+
+// ---- engine/dateutil.ts -------------------------------------------------
+/**
+ * Small, dependency-free date helpers. We parse "YYYY-MM-DD" manually rather
+ * than using `new Date(str)` to avoid timezone drift (which can shift a date to
+ * the previous/next day depending on the host's locale).
+ */
+
+interface YMD {
+  year: number;
+  month: number; // 1-12
+  day: number; // 1-31
+}
+
+/** Parse "YYYY-MM-DD" (optionally with a trailing time). Returns null if unparseable. */
+function parseISODate(s: string | null | undefined): YMD | null {
+  if (!s) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(s).trim());
+  if (!m) return null;
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  return { year, month, day };
+}
+
+/** "YYYY-MM" key for a date. */
+function monthKey(d: YMD): string {
+  return `${d.year}-${String(d.month).padStart(2, "0")}`;
+}
+
+/** Calendar quarter (1-4) for a month (1-12). */
+function quarterOfMonth(month: number): number {
+  return Math.floor((month - 1) / 3) + 1;
+}
+
+/** "YYYY-Qn" key for a date. */
+function quarterKey(d: YMD): string {
+  return `${d.year}-Q${quarterOfMonth(d.month)}`;
+}
+
+/** The three month keys ("YYYY-MM") that make up a given "YYYY-Qn". */
+function monthsInQuarter(qKey: string): string[] {
+  const m = /^(\d{4})-Q([1-4])$/.exec(qKey);
+  if (!m) return [];
+  const year = Number(m[1]);
+  const q = Number(m[2]);
+  const first = (q - 1) * 3 + 1;
+  return [first, first + 1, first + 2].map((mm) => `${year}-${String(mm).padStart(2, "0")}`);
+}
+
+/** The quarter key immediately following the given one (rolls over the year). */
+function nextQuarterKey(qKey: string): string | null {
+  const m = /^(\d{4})-Q([1-4])$/.exec(qKey);
+  if (!m) return null;
+  let year = Number(m[1]);
+  let q = Number(m[2]) + 1;
+  if (q > 4) {
+    q = 1;
+    year += 1;
+  }
+  return `${year}-Q${q}`;
+}
+
+/** Days since an epoch, for date arithmetic. Uses UTC to stay locale-independent. */
+function toDayNumber(d: YMD): number {
+  return Math.floor(Date.UTC(d.year, d.month - 1, d.day) / 86400000);
+}
+
+/** Inverse of toDayNumber. */
+function fromDayNumber(n: number): YMD {
+  const dt = new Date(n * 86400000);
+  return { year: dt.getUTCFullYear(), month: dt.getUTCMonth() + 1, day: dt.getUTCDate() };
+}
+
+/**
+ * ISO-8601 week key "YYYY-Www" (weeks start Monday; week 1 contains the year's
+ * first Thursday). Used for the week-by-week breakdown.
+ */
+function isoWeekKey(d: YMD): string {
+  const dayNum = toDayNumber(d);
+  // ISO weekday: Mon=1..Sun=7
+  const dow = ((new Date(dayNum * 86400000).getUTCDay() + 6) % 7) + 1;
+  // Thursday of this week determines the ISO year.
+  const thursday = dayNum + (4 - dow);
+  const tDate = fromDayNumber(thursday);
+  const isoYear = tDate.year;
+  const jan1 = toDayNumber({ year: isoYear, month: 1, day: 1 });
+  const week = Math.floor((thursday - jan1) / 7) + 1;
+  return `${isoYear}-W${String(week).padStart(2, "0")}`;
+}
+
+/** Monday (date) of the ISO week containing d, as YMD. Handy for labeling weeks. */
+function isoWeekStart(d: YMD): YMD {
+  const dayNum = toDayNumber(d);
+  const dow = ((new Date(dayNum * 86400000).getUTCDay() + 6) % 7) + 1;
+  return fromDayNumber(dayNum - (dow - 1));
+}
+
+// ---- engine/names.ts ----------------------------------------------------
+/**
+ * Name normalization — identical rules to the passage-billing-report skill:
+ * strip ends, collapse internal whitespace to a single space, compare
+ * case-sensitively (Passage exports preserve case correctly). We deliberately do
+ * NOT fuzzy-match here; reconciliation of nicknames is an explicit overrides map,
+ * exactly as the skill handles PTO names.
+ */
+function normalizeName(s: string | null | undefined): string {
+  if (!s) return "";
+  return String(s).trim().replace(/\s+/g, " ");
+}
+
+/** Apply an overrides map (e.g. PTO nickname -> canonical BCBA name) then normalize. */
+function canonicalName(s: string, overrides?: Record<string, string>): string {
+  const n = normalizeName(s);
+  if (overrides && Object.prototype.hasOwnProperty.call(overrides, n)) {
+    return normalizeName(overrides[n]);
+  }
+  return n;
+}
+
+// ---- engine/telehealth.ts -----------------------------------------------
+/**
+ * Telehealth resolution. Your sessions export carries a `session_location_type`
+ * column; the host maps it to `SessionRow.telehealth` before the row reaches the
+ * engine. The engine itself only ever sees the boolean.
+ *
+ * The exact string(s) in `session_location_type` that mean telehealth still need
+ * confirming, so the match is configurable. Defaults below catch the common
+ * spellings; set TELEHEALTH_LOCATION_VALUES to your real value(s) once known.
+ */
+
+/**
+ * Location-type values treated as telehealth (matched case-insensitively, trimmed).
+ * Confirmed values from the practice's `session_location_type` column.
+ */
+const TELEHEALTH_LOCATION_VALUES = ["Telehealth", "TelehealthHome"];
+
+/**
+ * True if a `session_location_type` value denotes telehealth.
+ * Pass a custom value list once the practice confirms the exact string.
+ */
+function isTelehealthLocation(
+  locationType: string | null | undefined,
+  values: string[] = TELEHEALTH_LOCATION_VALUES
+): boolean {
+  if (!locationType) return false;
+  const v = String(locationType).trim().toLowerCase();
+  if (!v) return false;
+  return values.some((x) => x.trim().toLowerCase() === v);
+}
+
+// ---- engine/types.ts ----------------------------------------------------
+/**
+ * Domain types for the BCBA compliance engine.
+ *
+ * These types describe DATA ONLY. The engine functions are pure: they take
+ * plain arrays/objects in and return plain objects out, with no file access,
+ * no network, and no DOM. That is what lets the exact same code run inside:
+ *   - Node unit tests (this repo)
+ *   - the SharePoint (SPFx) web part
+ *   - a Power Automate "Office Script" that runs on the monthly upload
+ *
+ * Parsing CSV/XLSX into these shapes happens OUTSIDE the engine, in whichever
+ * host is calling it.
+ */
+
+/** CPT / billing codes we care about. Others are still counted toward total hours. */
+const CODE_DIRECT = "97153"; // direct therapy delivered by a technician
+const CODE_SUPERVISION = "97155"; // protocol modification / supervision by the BCBA
+const CODE_CAREGIVER_TRAINING = "97156"; // caregiver / family training
+
+/**
+ * One delivered session. Mirrors the columns the passage-billing-report skill
+ * already reads from the Passage Health export, plus an optional telehealth flag.
+ */
+interface SessionRow {
+  /** Client name (as it appears in the export). */
+  client: string;
+  /** Staff member who personally delivered the session. */
+  teamMember: string;
+  /** CPT/billing code, e.g. "97153", "97155", "97156". */
+  billingCode: string;
+  /** Duration in hours. */
+  durationHours: number;
+  /** Session date, ISO "YYYY-MM-DD". May be empty/invalid; such rows only land in the Total period. */
+  date: string;
+  /**
+   * True if this session was delivered via telehealth.
+   * The host resolves this from whatever column your export actually uses
+   * (place-of-service, a "95"/"GT" modifier, a location column, etc.) via
+   * TelehealthResolver before the row reaches the engine.
+   */
+  telehealth?: boolean;
+}
+
+/** One approved PTO request. Mirrors the skill's PTO CSV columns. */
+interface PtoRow {
+  /** Employee name (may need name-override reconciliation to match a BCBA). */
+  employee: string;
+  /** Total approved hours for the request. */
+  hours: number;
+  /** Request start date, ISO "YYYY-MM-DD". */
+  startDate: string;
+  /** Request end date, ISO "YYYY-MM-DD" (currently informational; hours are spread from startDate). */
+  endDate?: string;
+}
+
+/** Assignment of a client to the BCBA who owns that client's caseload. */
+interface Pairing {
+  bcba: string;
+  client: string;
+}
+
+/**
+ * Per-BCBA configuration and targets. Everything that is a BUSINESS RULE lives
+ * here, never hardcoded in the engine, so you can tune thresholds without a code
+ * change. Monthly required billable hours come from your requirements sheet.
+ */
+interface BcbaConfig {
+  /** Canonical BCBA name (matches teamMember / pairing.bcba after normalization). */
+  name: string;
+  /** Email — the join key for notifications and the web part's identity match. */
+  email?: string;
+  /** Required billable hours per calendar month, keyed by "YYYY-MM". */
+  requiredHoursByMonth: Record<string, number>;
+  /** Clinical/billing targets used for compliance + bonus. */
+  targets: ComplianceTargets;
+}
+
+/**
+ * Compliance targets. Defaults are PLACEHOLDERS clearly marked in defaults.ts —
+ * replace with the real clinical/billing thresholds before going live.
+ */
+interface ComplianceTargets {
+  /** Minimum acceptable supervision ratio (97155 / 97153), as a fraction e.g. 0.10 = 10%. */
+  minSupervisionRatio: number;
+  /** Maximum acceptable supervision ratio, if capped (fraction). Use Infinity for no cap. */
+  maxSupervisionRatio: number;
+  /** Required caregiver-training (97156) hours per quarter. */
+  caregiverTrainingHoursPerQuarter: number;
+  /** Maximum share of hours allowed to be telehealth, as a fraction e.g. 0.40 = 40%. */
+  maxTelehealthShare: number;
+}
+
+/** Whether supervision ratio / telehealth are measured on the whole caseload or only what the BCBA personally delivered. */
+type MeasureBasis = "caseload" | "personallyDelivered";
+
+/** Engine-wide options. */
+interface EngineOptions {
+  /** How supervision ratio is measured. Default "caseload". */
+  supervisionBasis?: MeasureBasis;
+  /** How telehealth share is measured. Default "personallyDelivered". */
+  telehealthBasis?: MeasureBasis;
+  /** Fraction of a quarter's billable deficit that rolls into the next quarter's target. Default 0.5. */
+  rolloverFraction?: number;
+  /** Optional cap on rolled-over hours per quarter (Infinity = uncapped). Default Infinity. */
+  rolloverCapHours?: number;
+  /** Bonus rule parameters (see bonus.ts). */
+  bonus?: BonusConfig;
+}
+
+/**
+ * Bonus rule parameters. Confirmed formula (see bonus.ts):
+ *   $40/hr for billable hours over the (rollover-adjusted) requirement,
+ *   PLUS $20/hr for 97156 hours above 3/quarter — the second part only when the
+ *   billable minimum is met.
+ *
+ * Note: the bonus is NOT gated by supervision-ratio or telehealth compliance.
+ * Those are requirements tracked separately, not bonus conditions.
+ */
+interface BonusConfig {
+  /** $/hr for billable hours ABOVE the (rollover-adjusted) requirement. */
+  ratePerHourOverRequirement: number;
+  /** $/hr for 97156 (caregiver-training) hours above `caregiverBonusBaseHours` in the quarter. */
+  caregiverExcessRate: number;
+  /** 97156 hours per quarter that must be reached before the excess bonus applies. */
+  caregiverBonusBaseHours: number;
+  /** The caregiver-excess bonus only pays when billable hours meet the requirement. */
+  caregiverBonusRequiresBillableMet: boolean;
+}
+
+// ---- engine/results.ts --------------------------------------------------
+/**
+ * Result shapes produced by the engine. ONE `BcbaReport` object is what gets
+ * written to that BCBA's permission-isolated SharePoint item and rendered by the
+ * web part. Because each BCBA's report is a self-contained object, the storage
+ * layer can secure it per person with no cross-references to peers' data.
+ */
+
+/** Metrics for one client on a BCBA's caseload, for one period. */
+interface ClientMetrics {
+  client: string;
+  directHours: number; // 97153
+  supervisionHours: number; // 97155
+  caregiverTrainingHours: number; // 97156
+  totalHours: number; // all codes
+  /** 97155 / 97153, as a fraction. null when directHours == 0. */
+  supervisionRatio: number | null;
+  /** "OK" | "Did not deliver" | "" — did THIS bcba personally deliver the 97156 for this client this period. */
+  caregiverTrainingFlag: "OK" | "Did not deliver" | "";
+}
+
+/** One row of the week-by-week breakdown. */
+interface WeeklyRow {
+  weekKey: string; // ISO week "YYYY-Www"
+  weekStart: string; // Monday, "YYYY-MM-DD"
+  billableHours: number; // hours personally delivered that week
+  directHours: number;
+  supervisionHours: number;
+  caregiverTrainingHours: number;
+  telehealthHours: number;
+  sessionCount: number;
+}
+
+/** Compliance evaluation of a single measure against its target. */
+interface ComplianceCheck {
+  value: number; // measured value (ratio as fraction, share as fraction, or hours)
+  target: number; // the threshold used
+  met: boolean;
+  /** Human-readable, safe to show the BCBA. */
+  detail: string;
+}
+
+/** Everything for one BCBA, one period (month / quarter / ytd / total). */
+interface PeriodReport {
+  periodKey: string; // "YYYY-MM" | "YYYY-Qn" | "YYYY-YTD" | "ALL"
+  periodKind: "month" | "quarter" | "ytd" | "all";
+  label: string;
+  /** The "YYYY-MM" month keys this period covers (empty for "all", which spans everything). */
+  months: string[];
+
+  // Hours personally delivered by the BCBA this period.
+  billableHours: number;
+  directHours: number;
+  supervisionHours: number;
+  caregiverTrainingHours: number;
+  telehealthHours: number;
+  sessionCount: number;
+
+  ptoHours: number;
+  requiredHours: number | null; // null when no requirement configured
+  /** billableHours - effectiveRequiredHours. null when required is null. */
+  variance: number | null;
+  /** requiredHours plus any rolled-in deficit (quarters only). Equals requiredHours otherwise. */
+  effectiveRequiredHours: number | null;
+  /** Hours rolled IN from the previous quarter's deficit (quarters only). */
+  rolledInHours: number;
+  /** Deficit rolling OUT to the next quarter (quarters only). */
+  rollingOutHours: number;
+
+  supervisionRatioCheck: ComplianceCheck;
+  telehealthCheck: ComplianceCheck;
+  caregiverTrainingCheck: ComplianceCheck; // meaningful on quarter/ytd/all
+
+  /** Per-client caseload detail for this period. */
+  clients: ClientMetrics[];
+
+  /** Bonus for this period (populated for quarters; zeroed elsewhere). */
+  bonus: BonusResult;
+}
+
+interface BonusResult {
+  eligible: boolean;
+  hoursOverTarget: number;
+  amount: number;
+  /** Line items explaining how `amount` was reached — drives the "easy to view" bonus display. */
+  breakdown: BonusLine[];
+  /** Gates that blocked the bonus, if any. */
+  blockedBy: string[];
+}
+
+interface BonusLine {
+  label: string;
+  detail: string;
+  amount: number;
+}
+
+interface BcbaReport {
+  bcba: string;
+  email?: string;
+  /** ISO timestamp the report was generated (set by the host, not the engine). */
+  generatedAt?: string;
+  /** Periods in display order: months, then quarters, then YTD, then ALL. */
+  periods: PeriodReport[];
+  weekly: WeeklyRow[];
+  /** Notes are stored/edited separately by the web part; carried here for convenience. */
+  notes?: string;
+}
+
+// ---- engine/periods.ts --------------------------------------------------
+/**
+ * Period detection. Given the dated sessions, produce the ordered list of
+ * reporting periods, exactly like the passage-billing-report skill:
+ *   1. one per distinct month present (chronological)
+ *   2. one per distinct quarter those months fall into
+ *   3. if >1 year present, one YTD per year
+ *   4. a final "ALL" period covering everything
+ *
+ * Each period carries a membership test over "YYYY-MM" month keys so the metric
+ * code can filter sessions to the period without re-parsing dates.
+ */
+
+interface PeriodDef {
+  key: string;
+  kind: "month" | "quarter" | "ytd" | "all";
+  label: string;
+  /** Returns true if a session's month key belongs to this period. */
+  includesMonth: (mKey: string) => boolean;
+  /** The set of month keys this period covers (empty for "all", which takes everything). */
+  months: string[];
+}
+
+const MONTH_NAMES = [
+  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+function monthLabel(mKey: string): string {
+  const [y, m] = mKey.split("-");
+  return `${MONTH_NAMES[Number(m) - 1]} ${y}`;
+}
+
+function detectPeriods(sessions: SessionRow[]): PeriodDef[] {
+  const monthsPresent = new Set<string>();
+  const yearsPresent = new Set<number>();
+  for (const s of sessions) {
+    const d = parseISODate(s.date);
+    if (!d) continue;
+    monthsPresent.add(monthKey(d));
+    yearsPresent.add(d.year);
+  }
+
+  const sortedMonths = Array.from(monthsPresent).sort();
+  const quartersPresent = new Set<string>();
+  for (const mKey of sortedMonths) {
+    const d = parseISODate(`${mKey}-01`)!;
+    quartersPresent.add(quarterKey(d));
+  }
+  const sortedQuarters = Array.from(quartersPresent).sort();
+
+  const periods: PeriodDef[] = [];
+
+  for (const mKey of sortedMonths) {
+    periods.push({
+      key: mKey,
+      kind: "month",
+      label: monthLabel(mKey),
+      months: [mKey],
+      includesMonth: (k) => k === mKey,
+    });
+  }
+
+  for (const qKey of sortedQuarters) {
+    const months = monthsInQuarter(qKey);
+    const set = new Set(months);
+    periods.push({
+      key: qKey,
+      kind: "quarter",
+      label: qKey,
+      months,
+      includesMonth: (k) => set.has(k),
+    });
+  }
+
+  if (yearsPresent.size > 1) {
+    for (const year of Array.from(yearsPresent).sort()) {
+      const prefix = `${year}-`;
+      periods.push({
+        key: `${year}-YTD`,
+        kind: "ytd",
+        label: `${year} YTD`,
+        months: sortedMonths.filter((m) => m.startsWith(prefix)),
+        includesMonth: (k) => k.startsWith(prefix),
+      });
+    }
+  }
+
+  periods.push({
+    key: "ALL",
+    kind: "all",
+    label: "Total",
+    months: sortedMonths.slice(),
+    includesMonth: () => true,
+  });
+
+  return periods;
+}
+
+// ---- engine/pto.ts ------------------------------------------------------
+/**
+ * PTO distribution — mirrors the skill: each approved request's hours are spread
+ * calendar-day-by-day starting at the request's start date, `hoursPerDay` per day
+ * (default 8), with any remainder on the final day. The result is hours per
+ * "YYYY-MM" month key, which periods then sum.
+ *
+ * Only rows the host has already filtered to APPROVED should be passed in.
+ */
+
+function distributePtoByMonth(rows: PtoRow[], hoursPerDay = 8): Record<string, number> {
+  const byMonth: Record<string, number> = {};
+  for (const row of rows) {
+    const start = parseISODate(row.startDate);
+    const total = Number(row.hours);
+    if (!start || !isFinite(total) || total <= 0) continue;
+
+    let remaining = total;
+    let dayNum = toDayNumber(start);
+    // Guard against pathological inputs producing an unbounded loop.
+    let safety = 0;
+    while (remaining > 1e-9 && safety < 3660) {
+      const chunk = Math.min(hoursPerDay, remaining);
+      const mKey = monthKey(fromDayNumber(dayNum));
+      byMonth[mKey] = (byMonth[mKey] || 0) + chunk;
+      remaining -= chunk;
+      dayNum += 1;
+      safety += 1;
+    }
+  }
+  return byMonth;
+}
+
+/** Sum PTO across a set of month keys (used to project onto a period). */
+function ptoForMonths(byMonth: Record<string, number>, months: string[]): number {
+  let sum = 0;
+  for (const m of months) sum += byMonth[m] || 0;
+  return sum;
+}
+
+// ---- engine/metrics.ts --------------------------------------------------
+/**
+ * Metric computation over a set of sessions already filtered to a period.
+ *
+ * Two views, matching the skill:
+ *  - "personally delivered" — rows where teamMember == the BCBA. Drives billable
+ *    hours, telehealth %, PTO variance, bonus.
+ *  - "caseload / client totals" — hours for an assigned client summed across ALL
+ *    team members. Drives the supervision ratio and the per-client table. The
+ *    97156 flag is still evaluated per-BCBA (did THIS bcba deliver it).
+ */
+
+interface PersonalAggregate {
+  billableHours: number;
+  directHours: number;
+  supervisionHours: number;
+  caregiverTrainingHours: number;
+  telehealthHours: number;
+  sessionCount: number;
+}
+
+function emptyAggregate(): PersonalAggregate {
+  return {
+    billableHours: 0,
+    directHours: 0,
+    supervisionHours: 0,
+    caregiverTrainingHours: 0,
+    telehealthHours: 0,
+    sessionCount: 0,
+  };
+}
+
+/** True if a session belongs to a period (undated sessions only count for "all"). */
+function sessionInPeriod(s: SessionRow, period: PeriodDef): boolean {
+  const d = parseISODate(s.date);
+  if (!d) return period.kind === "all";
+  return period.includesMonth(monthKey(d));
+}
+
+/** Sum the BCBA's personally-delivered metrics over the given sessions. */
+function personalAggregate(sessions: SessionRow[], bcba: string): PersonalAggregate {
+  const target = normalizeName(bcba);
+  const agg = emptyAggregate();
+  for (const s of sessions) {
+    if (normalizeName(s.teamMember) !== target) continue;
+    const hrs = Number(s.durationHours) || 0;
+    agg.billableHours += hrs;
+    agg.sessionCount += 1;
+    if (s.billingCode === CODE_DIRECT) agg.directHours += hrs;
+    else if (s.billingCode === CODE_SUPERVISION) agg.supervisionHours += hrs;
+    else if (s.billingCode === CODE_CAREGIVER_TRAINING) agg.caregiverTrainingHours += hrs;
+    if (s.telehealth) agg.telehealthHours += hrs;
+  }
+  return agg;
+}
+
+/**
+ * Per-client caseload metrics for the assigned clients, over the given sessions.
+ * Client hours are summed across all team members; the caregiver-training flag
+ * reflects whether `bcba` personally delivered a 97156 for that client here.
+ */
+function clientMetrics(
+  sessions: SessionRow[],
+  bcba: string,
+  assignedClients: string[]
+): ClientMetrics[] {
+  const target = normalizeName(bcba);
+  const wanted = new Map<string, string>(); // normalized -> display
+  for (const c of assignedClients) wanted.set(normalizeName(c), c);
+
+  interface Acc {
+    display: string;
+    direct: number;
+    supervision: number;
+    caregiver: number;
+    total: number;
+    bcbaDeliveredCaregiver: boolean;
+  }
+  const accs = new Map<string, Acc>();
+  for (const [norm, disp] of wanted) {
+    accs.set(norm, {
+      display: disp,
+      direct: 0,
+      supervision: 0,
+      caregiver: 0,
+      total: 0,
+      bcbaDeliveredCaregiver: false,
+    });
+  }
+
+  for (const s of sessions) {
+    const cNorm = normalizeName(s.client);
+    const acc = accs.get(cNorm);
+    if (!acc) continue; // not an assigned client
+    const hrs = Number(s.durationHours) || 0;
+    acc.total += hrs;
+    if (s.billingCode === CODE_DIRECT) acc.direct += hrs;
+    else if (s.billingCode === CODE_SUPERVISION) acc.supervision += hrs;
+    else if (s.billingCode === CODE_CAREGIVER_TRAINING) {
+      acc.caregiver += hrs;
+      if (normalizeName(s.teamMember) === target && hrs > 0) acc.bcbaDeliveredCaregiver = true;
+    }
+  }
+
+  const out: ClientMetrics[] = [];
+  for (const acc of accs.values()) {
+    let flag: ClientMetrics["caregiverTrainingFlag"] = "";
+    if (acc.caregiver > 0) flag = acc.bcbaDeliveredCaregiver ? "OK" : "Did not deliver";
+    out.push({
+      client: acc.display,
+      directHours: acc.direct,
+      supervisionHours: acc.supervision,
+      caregiverTrainingHours: acc.caregiver,
+      totalHours: acc.total,
+      supervisionRatio: acc.direct > 0 ? acc.supervision / acc.direct : null,
+      caregiverTrainingFlag: flag,
+    });
+  }
+  out.sort((a, b) => a.client.localeCompare(b.client));
+  return out;
+}
+
+/** Aggregate caseload supervision ratio: sum(97155)/sum(97153) across assigned clients. */
+function caseloadSupervisionRatio(clients: ClientMetrics[]): {
+  ratio: number | null;
+  supervision: number;
+  direct: number;
+} {
+  let sup = 0;
+  let dir = 0;
+  for (const c of clients) {
+    sup += c.supervisionHours;
+    dir += c.directHours;
+  }
+  return { ratio: dir > 0 ? sup / dir : null, supervision: sup, direct: dir };
+}
+
+// ---- engine/weekly.ts ---------------------------------------------------
+/**
+ * Week-by-week breakdown of the BCBA's personally-delivered work, keyed by ISO
+ * week. Undated sessions are skipped (they can't be placed in a week).
+ */
+
+function weeklyBreakdown(sessions: SessionRow[], bcba: string): WeeklyRow[] {
+  const target = normalizeName(bcba);
+  const byWeek = new Map<string, WeeklyRow>();
+
+  for (const s of sessions) {
+    if (normalizeName(s.teamMember) !== target) continue;
+    const d = parseISODate(s.date);
+    if (!d) continue;
+    const key = isoWeekKey(d);
+    let row = byWeek.get(key);
+    if (!row) {
+      const ws = isoWeekStart(d);
+      row = {
+        weekKey: key,
+        weekStart: monthKey(ws) + "-" + String(ws.day).padStart(2, "0"),
+        billableHours: 0,
+        directHours: 0,
+        supervisionHours: 0,
+        caregiverTrainingHours: 0,
+        telehealthHours: 0,
+        sessionCount: 0,
+      };
+      byWeek.set(key, row);
+    }
+    const hrs = Number(s.durationHours) || 0;
+    row.billableHours += hrs;
+    row.sessionCount += 1;
+    if (s.billingCode === CODE_DIRECT) row.directHours += hrs;
+    else if (s.billingCode === CODE_SUPERVISION) row.supervisionHours += hrs;
+    else if (s.billingCode === CODE_CAREGIVER_TRAINING) row.caregiverTrainingHours += hrs;
+    if (s.telehealth) row.telehealthHours += hrs;
+  }
+
+  return Array.from(byWeek.values()).sort((a, b) => a.weekKey.localeCompare(b.weekKey));
+}
+
+// ---- engine/compliance.ts -----------------------------------------------
+/**
+ * Turn measured values into ComplianceCheck objects the web part can render
+ * directly. Ratios and shares are fractions (0.10 == 10%).
+ */
+
+function pct(x: number): string {
+  return `${(x * 100).toFixed(1)}%`;
+}
+
+/** Supervision ratio (97155/97153) must sit within [min, max]. null ratio = not yet measurable. */
+function supervisionRatioCheck(ratio: number | null, t: ComplianceTargets): ComplianceCheck {
+  if (ratio === null) {
+    return {
+      value: 0,
+      target: t.minSupervisionRatio,
+      met: false,
+      detail: "No direct (97153) hours yet — ratio not measurable.",
+    };
+  }
+  const withinMin = ratio >= t.minSupervisionRatio;
+  const withinMax = ratio <= t.maxSupervisionRatio;
+  const met = withinMin && withinMax;
+  let detail: string;
+  if (!withinMin) detail = `Ratio ${pct(ratio)} is below the ${pct(t.minSupervisionRatio)} minimum.`;
+  else if (!withinMax) detail = `Ratio ${pct(ratio)} exceeds the ${pct(t.maxSupervisionRatio)} maximum.`;
+  else detail = `Ratio ${pct(ratio)} is within target.`;
+  return { value: ratio, target: t.minSupervisionRatio, met, detail };
+}
+
+/**
+ * Telehealth share of hours must be at or below the cap. Clients with a
+ * telehealth override are excluded from the share entirely; `exemptClientCount`
+ * is only used to annotate the detail line.
+ */
+function telehealthCheck(
+  share: number,
+  t: ComplianceTargets,
+  exemptClientCount = 0
+): ComplianceCheck {
+  const met = share <= t.maxTelehealthShare + 1e-9;
+  const exemptNote =
+    exemptClientCount > 0
+      ? ` (${exemptClientCount} client${exemptClientCount === 1 ? "" : "s"} exempt via override)`
+      : "";
+  return {
+    value: share,
+    target: t.maxTelehealthShare,
+    met,
+    detail: met
+      ? `Telehealth ${pct(share)} is within the ${pct(t.maxTelehealthShare)} cap${exemptNote}.`
+      : `Telehealth ${pct(share)} exceeds the ${pct(t.maxTelehealthShare)} cap${exemptNote}.`,
+  };
+}
+
+/**
+ * Caregiver-training (97156) hours must meet the target scaled to how much of a
+ * quarter the period represents: months = target/3, a full quarter = target,
+ * multi-quarter (YTD/all) scales up by the number of months / 3.
+ */
+function caregiverTrainingCheck(
+  hoursDelivered: number,
+  monthsCovered: number,
+  t: ComplianceTargets
+): ComplianceCheck {
+  const quarterEquivalents = monthsCovered > 0 ? monthsCovered / 3 : 1;
+  const target = t.caregiverTrainingHoursPerQuarter * quarterEquivalents;
+  const met = hoursDelivered >= target - 1e-9;
+  return {
+    value: hoursDelivered,
+    target,
+    met,
+    detail: met
+      ? `${hoursDelivered.toFixed(1)} hrs meets the ${target.toFixed(1)} hr target.`
+      : `${hoursDelivered.toFixed(1)} of ${target.toFixed(1)} required caregiver-training hrs.`,
+  };
+}
+
+// ---- engine/rollover.ts -------------------------------------------------
+/**
+ * Quarterly deficit rollover.
+ *
+ * Confirmed rule: when a quarter ends below its billable-hours requirement,
+ * `rolloverFraction` (default 0.5) of that deficit is ADDED to the next
+ * quarter's target. The rest is forgiven.
+ *
+ * Details:
+ *  - Deficits are measured against the *effective* requirement (base + anything
+ *    already rolled in), so a carried deficit that is missed again compounds.
+ *  - A deficit only rolls into the immediately following CALENDAR quarter, and
+ *    only if that quarter is present in the data (a gap drops the carry).
+ *  - `rolloverCapHours` caps how much can roll into any one quarter.
+ */
+
+interface QuarterInput {
+  quarterKey: string; // "YYYY-Qn"
+  baseRequired: number | null;
+  billable: number;
+}
+
+interface QuarterRollover {
+  quarterKey: string;
+  rolledIn: number;
+  effectiveRequired: number | null;
+  variance: number | null;
+  rollingOut: number;
+}
+
+function computeRollover(
+  quarters: QuarterInput[],
+  rolloverFraction = 0.5,
+  rolloverCapHours = Infinity
+): Map<string, QuarterRollover> {
+  const ordered = quarters.slice().sort((a, b) => a.quarterKey.localeCompare(b.quarterKey));
+  const present = new Set(ordered.map((q) => q.quarterKey));
+  const out = new Map<string, QuarterRollover>();
+  const rollingOutByQuarter = new Map<string, number>();
+
+  for (const q of ordered) {
+    // What rolled in comes from the immediately preceding calendar quarter, if present.
+    let rolledIn = 0;
+    for (const [prevKey, amt] of rollingOutByQuarter) {
+      if (nextQuarterKey(prevKey) === q.quarterKey) rolledIn += amt;
+    }
+    rolledIn = Math.min(rolledIn, rolloverCapHours);
+
+    let effectiveRequired: number | null = null;
+    let variance: number | null = null;
+    let rollingOut = 0;
+
+    if (q.baseRequired !== null) {
+      effectiveRequired = q.baseRequired + rolledIn;
+      variance = q.billable - effectiveRequired;
+      const deficit = Math.max(0, effectiveRequired - q.billable);
+      // Only carry forward if the next calendar quarter is present in the data.
+      const nq = nextQuarterKey(q.quarterKey);
+      if (nq && present.has(nq)) {
+        rollingOut = deficit * rolloverFraction;
+      }
+    }
+
+    rollingOutByQuarter.set(q.quarterKey, rollingOut);
+    out.set(q.quarterKey, {
+      quarterKey: q.quarterKey,
+      rolledIn,
+      effectiveRequired,
+      variance,
+      rollingOut,
+    });
+  }
+
+  return out;
+}
+
+// ---- engine/bonus.ts ----------------------------------------------------
+/**
+ * Bonus calculation — confirmed formula (per quarter):
+ *
+ *   A) $40 per billable hour delivered ABOVE the (rollover-adjusted) requirement.
+ *   B) $20 per 97156 (caregiver-training) hour above 3 hours in the quarter,
+ *      paid ONLY if the billable minimum requirement is met.
+ *
+ *   amount = A + B
+ *
+ * The bonus is intentionally NOT gated by supervision-ratio or telehealth
+ * compliance — those are requirements tracked elsewhere, not bonus conditions.
+ * The `breakdown` explains the amount line-by-line for the "easy to view" display.
+ */
+
+interface BonusInputs {
+  billableHours: number;
+  effectiveRequiredHours: number | null;
+  caregiverTrainingHours: number;
+}
+
+function zeroBonus(): BonusResult {
+  return { eligible: false, hoursOverTarget: 0, amount: 0, breakdown: [], blockedBy: [] };
+}
+
+function computeBonus(inp: BonusInputs, cfg: BonusConfig): BonusResult {
+  const required = inp.effectiveRequiredHours;
+  const billableMet = required !== null && inp.billableHours >= required - 1e-9;
+  const hoursOverTarget = required === null ? 0 : Math.max(0, inp.billableHours - required);
+
+  const breakdown: BonusLine[] = [];
+  const blockedBy: string[] = [];
+  let amount = 0;
+
+  // A) hours over requirement
+  if (hoursOverTarget > 0 && cfg.ratePerHourOverRequirement > 0) {
+    const line = hoursOverTarget * cfg.ratePerHourOverRequirement;
+    amount += line;
+    breakdown.push({
+      label: "Hours over requirement",
+      detail: `${hoursOverTarget.toFixed(1)} hrs × $${cfg.ratePerHourOverRequirement.toFixed(0)}/hr`,
+      amount: line,
+    });
+  }
+
+  // B) caregiver-training hours above the base, gated on the billable minimum
+  const caregiverExcess = Math.max(0, inp.caregiverTrainingHours - cfg.caregiverBonusBaseHours);
+  if (caregiverExcess > 0 && cfg.caregiverExcessRate > 0) {
+    if (!cfg.caregiverBonusRequiresBillableMet || billableMet) {
+      const line = caregiverExcess * cfg.caregiverExcessRate;
+      amount += line;
+      breakdown.push({
+        label: `Caregiver training over ${cfg.caregiverBonusBaseHours} hrs`,
+        detail: `${caregiverExcess.toFixed(1)} hrs × $${cfg.caregiverExcessRate.toFixed(0)}/hr`,
+        amount: line,
+      });
+    } else {
+      blockedBy.push(
+        `Caregiver-training bonus (${caregiverExcess.toFixed(1)} excess hrs) needs the billable requirement met first.`
+      );
+    }
+  }
+
+  // Eligible = the billable requirement was met (the gate that matters for this scheme).
+  const eligible = billableMet;
+  if (required !== null && !billableMet) {
+    blockedBy.unshift(
+      `Billable requirement not met (${inp.billableHours.toFixed(1)} of ${required.toFixed(1)} hrs).`
+    );
+  }
+
+  return { eligible, hoursOverTarget, amount, breakdown, blockedBy };
+}
+
+// ---- engine/defaults.ts -------------------------------------------------
+/**
+ * Confirmed business rules (from the practice), plus the two things still to
+ * finalize. Per-BCBA monthly required hours come from the requirements sheet and
+ * are passed in per config, not here.
+ *
+ * CONFIRMED:
+ *   - Supervision ratio band: 10%–20% (97155:97153)
+ *   - Caregiver-training (97156): 3 hours required per quarter
+ *   - Telehealth cap: 50%, with a per-client override (exempt clients excluded
+ *     from the cap — see EngineInput.telehealthOverrideClients)
+ *   - Bonus: $40/hr over requirement, plus $20/hr for 97156 above 3 hrs/quarter
+ *     when the billable minimum is met
+ *   - Rollover: 50% of a quarter's deficit carries to the next quarter
+ *
+ * STILL TO CONFIRM:
+ *   - The exact value in `session_location_type` that means telehealth
+ *     (see telehealth.ts — TELEHEALTH_LOCATION_VALUES).
+ *   - Which clients carry the telehealth override (data, supplied per run).
+ */
+
+const TARGETS: ComplianceTargets = {
+  minSupervisionRatio: 0.1, // 10%
+  maxSupervisionRatio: 0.2, // 20%
+  caregiverTrainingHoursPerQuarter: 3,
+  maxTelehealthShare: 0.5, // 50% (per-client overrides exempt specific clients)
+};
+
+const BONUS: BonusConfig = {
+  ratePerHourOverRequirement: 40,
+  caregiverExcessRate: 20,
+  caregiverBonusBaseHours: 3,
+  caregiverBonusRequiresBillableMet: true,
+};
+
+const DEFAULT_OPTIONS: Required<Omit<EngineOptions, "bonus">> & { bonus: BonusConfig } = {
+  supervisionBasis: "caseload",
+  telehealthBasis: "personallyDelivered",
+  rolloverFraction: 0.5,
+  rolloverCapHours: Infinity,
+  bonus: BONUS,
+};
+
+// Back-compat aliases (older imports / tests).
+const PLACEHOLDER_TARGETS = TARGETS;
+const PLACEHOLDER_BONUS = BONUS;
+
+// ---- engine/index.ts ----------------------------------------------------
+/**
+ * Engine entry point. `buildBcbaReport` produces ONE self-contained report for
+ * ONE BCBA — the exact object the monthly job writes to that BCBA's
+ * permission-isolated SharePoint item and the web part renders. No report
+ * references any other BCBA's data, which is what makes per-person permission
+ * isolation clean.
+ *
+ * `buildAllReports` is the convenience the monthly Office Script calls: hand it
+ * ALL sessions + ALL pto + ALL pairings + every BCBA's config, get back one
+ * report per BCBA to write out to each secured location.
+ */
+
+interface EngineInput {
+  sessions: SessionRow[];
+  pto: PtoRow[];
+  pairings: Pairing[];
+  config: BcbaConfig;
+  options?: EngineOptions;
+  /** Optional PTO name reconciliation map (nickname -> canonical BCBA name). */
+  ptoNameOverrides?: Record<string, string>;
+  /** Clients with a telehealth override — excluded from the telehealth cap. */
+  telehealthOverrideClients?: string[];
+}
+
+function resolveOptions(options?: EngineOptions) {
+  return {
+    supervisionBasis: options?.supervisionBasis ?? DEFAULT_OPTIONS.supervisionBasis,
+    telehealthBasis: options?.telehealthBasis ?? DEFAULT_OPTIONS.telehealthBasis,
+    rolloverFraction: options?.rolloverFraction ?? DEFAULT_OPTIONS.rolloverFraction,
+    rolloverCapHours: options?.rolloverCapHours ?? DEFAULT_OPTIONS.rolloverCapHours,
+    bonus: options?.bonus ?? DEFAULT_OPTIONS.bonus,
+  };
+}
+
+/**
+ * Telehealth share for the cap check. Clients in `exemptNorm` (per-client
+ * override) are excluded from BOTH numerator and denominator, so approved
+ * telehealth never counts against the BCBA.
+ *   - basis "personallyDelivered": rows the BCBA delivered
+ *   - basis "caseload": rows for assigned clients, any provider
+ */
+function telehealthShare(
+  periodSessions: SessionRow[],
+  opts: {
+    basis: "caseload" | "personallyDelivered";
+    bcbaNorm: string;
+    assignedNorm: Set<string>;
+    exemptNorm: Set<string>;
+  }
+): number {
+  let telehealth = 0;
+  let total = 0;
+  for (const s of periodSessions) {
+    const cNorm = normalizeName(s.client);
+    if (opts.exemptNorm.has(cNorm)) continue; // approved telehealth — off the cap
+    if (opts.basis === "personallyDelivered") {
+      if (normalizeName(s.teamMember) !== opts.bcbaNorm) continue;
+    } else {
+      if (!opts.assignedNorm.has(cNorm)) continue;
+    }
+    const hrs = Number(s.durationHours) || 0;
+    total += hrs;
+    if (s.telehealth) telehealth += hrs;
+  }
+  return total > 0 ? telehealth / total : 0;
+}
+
+function requiredForMonths(cfg: BcbaConfig, months: string[]): number | null {
+  let sum = 0;
+  let any = false;
+  for (const m of months) {
+    if (Object.prototype.hasOwnProperty.call(cfg.requiredHoursByMonth, m)) {
+      sum += cfg.requiredHoursByMonth[m];
+      any = true;
+    }
+  }
+  return any ? sum : null;
+}
+
+function buildBcbaReport(input: EngineInput): BcbaReport {
+  const opt = resolveOptions(input.options);
+  const bcba = normalizeName(input.config.name);
+  const targets = input.config.targets;
+
+  // Clients assigned to this BCBA.
+  const assignedClients: string[] = [];
+  const assignedSeen = new Set<string>();
+  const assignedNorm = new Set<string>();
+  for (const p of input.pairings) {
+    if (normalizeName(p.bcba) !== bcba) continue;
+    const norm = normalizeName(p.client);
+    if (!norm || assignedSeen.has(norm)) continue;
+    assignedSeen.add(norm);
+    assignedNorm.add(norm);
+    assignedClients.push(p.client);
+  }
+
+  // Clients with a telehealth override (excluded from the telehealth cap).
+  const exemptNorm = new Set<string>();
+  for (const c of input.telehealthOverrideClients || []) exemptNorm.add(normalizeName(c));
+  let exemptAssignedCount = 0;
+  for (const n of assignedNorm) if (exemptNorm.has(n)) exemptAssignedCount++;
+
+  // PTO for this BCBA (respecting name overrides), distributed to months.
+  const myPto = input.pto.filter(
+    (r) => canonicalName(r.employee, input.ptoNameOverrides) === bcba
+  );
+  const ptoByMonth = distributePtoByMonth(myPto);
+
+  const periods = detectPeriods(input.sessions);
+
+  // Phase 1: raw per-period aggregates.
+  interface Raw {
+    def: PeriodDef;
+    personal: PersonalAggregate;
+    clients: ReturnType<typeof clientMetrics>;
+    supRatio: number | null;
+    ptoHours: number;
+    baseRequired: number | null;
+    supCheck: ComplianceCheck;
+    teleCheck: ComplianceCheck;
+    caregiverCheck: ComplianceCheck;
+  }
+  const raws: Raw[] = periods.map((def) => {
+    const periodSessions = input.sessions.filter((s) => sessionInPeriod(s, def));
+    const personal = personalAggregate(periodSessions, bcba);
+    const clients = clientMetrics(periodSessions, bcba, assignedClients);
+
+    // Supervision ratio basis.
+    let supRatio: number | null;
+    if (opt.supervisionBasis === "personallyDelivered") {
+      supRatio = personal.directHours > 0 ? personal.supervisionHours / personal.directHours : null;
+    } else {
+      supRatio = caseloadSupervisionRatio(clients).ratio;
+    }
+
+    // Telehealth share for the cap (exempt clients excluded from both sides).
+    const teleShare = telehealthShare(periodSessions, {
+      basis: opt.telehealthBasis,
+      bcbaNorm: bcba,
+      assignedNorm,
+      exemptNorm,
+    });
+
+    const ptoHours = ptoForMonths(ptoByMonth, def.months);
+    const baseRequired = requiredForMonths(input.config, def.months);
+    const monthsCovered = def.kind === "all" ? def.months.length || 3 : def.months.length;
+
+    return {
+      def,
+      personal,
+      clients,
+      supRatio,
+      ptoHours,
+      baseRequired,
+      supCheck: supervisionRatioCheck(supRatio, targets),
+      teleCheck: telehealthCheck(teleShare, targets, exemptAssignedCount),
+      caregiverCheck: caregiverTrainingCheck(personal.caregiverTrainingHours, monthsCovered, targets),
+    };
+  });
+
+  // Phase 2: quarterly rollover.
+  const quarterInputs: QuarterInput[] = raws
+    .filter((r) => r.def.kind === "quarter")
+    .map((r) => ({
+      quarterKey: r.def.key,
+      baseRequired: r.baseRequired,
+      billable: r.personal.billableHours,
+    }));
+  const rollover = computeRollover(quarterInputs, opt.rolloverFraction, opt.rolloverCapHours);
+
+  // Phase 3: assemble period reports (+ bonus on quarters).
+  const periodReports: PeriodReport[] = raws.map((r) => {
+    let effectiveRequired = r.baseRequired;
+    let variance = r.baseRequired === null ? null : r.personal.billableHours - r.baseRequired;
+    let rolledIn = 0;
+    let rollingOut = 0;
+
+    if (r.def.kind === "quarter") {
+      const ro = rollover.get(r.def.key);
+      if (ro) {
+        effectiveRequired = ro.effectiveRequired;
+        variance = ro.variance;
+        rolledIn = ro.rolledIn;
+        rollingOut = ro.rollingOut;
+      }
+    }
+
+    const bonus =
+      r.def.kind === "quarter"
+        ? computeBonus(
+            {
+              billableHours: r.personal.billableHours,
+              effectiveRequiredHours: effectiveRequired,
+              caregiverTrainingHours: r.personal.caregiverTrainingHours,
+            },
+            opt.bonus
+          )
+        : zeroBonus();
+
+    return {
+      periodKey: r.def.key,
+      periodKind: r.def.kind,
+      label: r.def.label,
+      months: r.def.months.slice(),
+      billableHours: r.personal.billableHours,
+      directHours: r.personal.directHours,
+      supervisionHours: r.personal.supervisionHours,
+      caregiverTrainingHours: r.personal.caregiverTrainingHours,
+      telehealthHours: r.personal.telehealthHours,
+      sessionCount: r.personal.sessionCount,
+      ptoHours: r.ptoHours,
+      requiredHours: r.baseRequired,
+      variance,
+      effectiveRequiredHours: effectiveRequired,
+      rolledInHours: rolledIn,
+      rollingOutHours: rollingOut,
+      supervisionRatioCheck: r.supCheck,
+      telehealthCheck: r.teleCheck,
+      caregiverTrainingCheck: r.caregiverCheck,
+      clients: r.clients,
+      bonus,
+    };
+  });
+
+  return {
+    bcba: input.config.name,
+    email: input.config.email,
+    periods: periodReports,
+    weekly: weeklyBreakdown(input.sessions, bcba),
+  };
+}
+
+interface AllReportsInput {
+  sessions: SessionRow[];
+  pto: PtoRow[];
+  pairings: Pairing[];
+  configs: BcbaConfig[];
+  options?: EngineOptions;
+  ptoNameOverrides?: Record<string, string>;
+  telehealthOverrideClients?: string[];
+}
+
+/** Build one report per BCBA config. */
+function buildAllReports(input: AllReportsInput): BcbaReport[] {
+  return input.configs.map((config) =>
+    buildBcbaReport({
+      sessions: input.sessions,
+      pto: input.pto,
+      pairings: input.pairings,
+      config,
+      options: input.options,
+      ptoNameOverrides: input.ptoNameOverrides,
+      telehealthOverrideClients: input.telehealthOverrideClients,
+    })
+  );
+}
+
+/* =============================================================================
+ * OFFICE SCRIPT GLUE — appended after the bundled engine by build-officescript.js.
+ *
+ * Do not add imports/exports here (Office Scripts are a single module). Every
+ * engine symbol used below (SessionRow, PtoRow, Pairing, BcbaConfig, TARGETS,
+ * BONUS, buildAllReports, isTelehealthLocation, …) comes from the engine code
+ * concatenated ABOVE this block.
+ *
+ * The "Run script" action in Power Automate calls main() with:
+ *   - workbook:    the stored "BCBA Config.xlsx" (tabs: Pairings, Requirements,
+ *                  TelehealthOverrides, optionally NameOverrides)
+ *   - sessionsCsv: raw text of the month's billing/sessions CSV
+ *   - ptoCsv:      raw text of the month's PTO CSV
+ *
+ * It returns one entry per BCBA. The flow then upserts each into the
+ * "BCBA Reports" list and sets that BCBA's item-level permission.
+ * ========================================================================== */
+
+interface ReportOutput {
+  name: string;
+  email: string;
+  reportJson: string;
+}
+interface ScriptResult {
+  generatedAt: string;
+  count: number;
+  reports: ReportOutput[];
+  warnings: string[];
+}
+
+/** Minimal, correct CSV parser: handles quoted fields, embedded commas, quotes, CRLF. */
+function parseCsv(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = "";
+  let inQuotes = false;
+  const s = text.replace(/^﻿/, ""); // strip BOM
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (s[i + 1] === '"') {
+          field += '"';
+          i++;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        field += c;
+      }
+    } else if (c === '"') {
+      inQuotes = true;
+    } else if (c === ",") {
+      row.push(field);
+      field = "";
+    } else if (c === "\n") {
+      row.push(field);
+      rows.push(row);
+      row = [];
+      field = "";
+    } else if (c === "\r") {
+      // ignore; handled by \n
+    } else {
+      field += c;
+    }
+  }
+  // last field/row
+  if (field.length > 0 || row.length > 0) {
+    row.push(field);
+    rows.push(row);
+  }
+  return rows.filter((r) => r.length > 1 || (r.length === 1 && r[0].trim() !== ""));
+}
+
+/** Turn a parsed CSV into objects keyed by the (trimmed) header row. */
+function csvToObjects(text: string): { [k: string]: string }[] {
+  const rows = parseCsv(text);
+  if (rows.length < 1) return [];
+  const headers = rows[0].map((h) => h.trim());
+  const out: { [k: string]: string }[] = [];
+  for (let r = 1; r < rows.length; r++) {
+    const obj: { [k: string]: string } = {};
+    for (let c = 0; c < headers.length; c++) obj[headers[c]] = (rows[r][c] || "").trim();
+    out.push(obj);
+  }
+  return out;
+}
+
+function toNum(v: string): number {
+  const n = parseFloat(String(v).replace(/[^0-9.\-]/g, ""));
+  return isNaN(n) ? 0 : n;
+}
+
+/** Normalize a spreadsheet date cell (which may be text or an Excel serial) to YYYY-MM-DD. */
+function toIsoDate(v: string): string {
+  const t = String(v).trim();
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(t);
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  const md = /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/.exec(t); // M/D/YYYY
+  if (md) {
+    let y = md[3];
+    if (y.length === 2) y = "20" + y;
+    return `${y}-${String(+md[1]).padStart(2, "0")}-${String(+md[2]).padStart(2, "0")}`;
+  }
+  return t; // engine tolerates unparseable dates (Total period only)
+}
+
+/** First present value among candidate header names (case/space tolerant). */
+function pick(obj: { [k: string]: string }, keys: string[]): string {
+  for (const k of keys) {
+    if (obj[k] !== undefined) return obj[k];
+  }
+  // case-insensitive fallback
+  const lower: { [k: string]: string } = {};
+  for (const kk of Object.keys(obj)) lower[kk.toLowerCase().replace(/\s+/g, "")] = obj[kk];
+  for (const k of keys) {
+    const key = k.toLowerCase().replace(/\s+/g, "");
+    if (lower[key] !== undefined) return lower[key];
+  }
+  return "";
+}
+
+function parseSessions(csv: string): SessionRow[] {
+  return csvToObjects(csv).map((o) => {
+    const loc = pick(o, ["session_location_type", "location_type", "location"]);
+    return {
+      client: pick(o, ["client", "client_name"]),
+      teamMember: pick(o, ["team_member", "staff", "provider"]),
+      billingCode: pick(o, ["billing_code", "cpt", "code"]).trim(),
+      durationHours: toNum(pick(o, ["session_duration", "duration", "hours"])),
+      date: toIsoDate(pick(o, ["session_start_date", "date", "start_date"])),
+      telehealth: isTelehealthLocation(loc),
+    };
+  });
+}
+
+function parsePto(csv: string): PtoRow[] {
+  return csvToObjects(csv)
+    .filter((o) => {
+      const status = pick(o, ["Leave request status", "status"]).toUpperCase();
+      return status === "" || status === "APPROVED"; // count APPROVED (or unmarked)
+    })
+    .map((o) => ({
+      employee: pick(o, ["Employee", "employee", "name"]),
+      hours: toNum(pick(o, ["Leave request duration in hours", "hours", "duration"])),
+      startDate: toIsoDate(pick(o, ["Start Date", "start_date", "start"])),
+      endDate: toIsoDate(pick(o, ["Leave end date", "end_date", "end"])),
+    }));
+}
+
+/** Read a worksheet into header-keyed objects; returns [] if the sheet is missing. */
+function sheetObjects(workbook: ExcelScript.Workbook, name: string): { [k: string]: string }[] {
+  const ws = workbook.getWorksheet(name);
+  if (!ws) return [];
+  const used = ws.getUsedRange();
+  if (!used) return [];
+  const texts = used.getTexts(); // displayed strings, so dates/numbers read predictably
+  if (texts.length < 1) return [];
+  const headers = texts[0].map((h) => String(h).trim());
+  const out: { [k: string]: string }[] = [];
+  for (let r = 1; r < texts.length; r++) {
+    const obj: { [k: string]: string } = {};
+    let any = false;
+    for (let c = 0; c < headers.length; c++) {
+      const v = String(texts[r][c] || "").trim();
+      obj[headers[c]] = v;
+      if (v !== "") any = true;
+    }
+    if (any) out.push(obj);
+  }
+  return out;
+}
+
+function readPairings(workbook: ExcelScript.Workbook): Pairing[] {
+  return sheetObjects(workbook, "Pairings")
+    .map((o) => ({
+      bcba: pick(o, ["Consultant", "BCBA", "Consultant Name", "Analyst"]),
+      client: pick(o, ["Client Name", "Client", "client"]),
+    }))
+    .filter((p) => p.bcba !== "" && p.client !== "");
+}
+
+function readOverrides(workbook: ExcelScript.Workbook): string[] {
+  return sheetObjects(workbook, "TelehealthOverrides")
+    .map((o) => pick(o, ["Client Name", "Client", "client"]))
+    .filter((c) => c !== "");
+}
+
+function readNameOverrides(workbook: ExcelScript.Workbook): { [k: string]: string } {
+  const map: { [k: string]: string } = {};
+  for (const o of sheetObjects(workbook, "NameOverrides")) {
+    const from = pick(o, ["From", "PTO Name", "from"]);
+    const to = pick(o, ["To", "BCBA Name", "to"]);
+    if (from && to) map[from] = to;
+  }
+  return map;
+}
+
+function readConfigs(workbook: ExcelScript.Workbook, warnings: string[]): BcbaConfig[] {
+  const rows = sheetObjects(workbook, "Requirements");
+  const configs: BcbaConfig[] = [];
+  for (const o of rows) {
+    const name = pick(o, ["Consultant Name", "Consultant", "BCBA", "Name"]);
+    if (!name) continue;
+    const email = pick(o, ["Email", "email"]);
+    const requiredHoursByMonth: { [k: string]: number } = {};
+    for (const key of Object.keys(o)) {
+      if (/^\d{4}-\d{2}$/.test(key.trim())) {
+        const v = o[key].trim();
+        if (v !== "") requiredHoursByMonth[key.trim()] = toNum(v);
+      }
+    }
+    // Optional per-BCBA target overrides; fall back to the practice defaults.
+    const minR = pick(o, ["Min Ratio", "minSupervisionRatio"]);
+    const maxR = pick(o, ["Max Ratio", "maxSupervisionRatio"]);
+    const cg = pick(o, ["Caregiver Hrs/Qtr", "caregiverTrainingHoursPerQuarter"]);
+    const teleCap = pick(o, ["Telehealth Cap", "maxTelehealthShare"]);
+    const targets: ComplianceTargets = {
+      minSupervisionRatio: minR !== "" ? toNum(minR) : TARGETS.minSupervisionRatio,
+      maxSupervisionRatio: maxR !== "" ? toNum(maxR) : TARGETS.maxSupervisionRatio,
+      caregiverTrainingHoursPerQuarter: cg !== "" ? toNum(cg) : TARGETS.caregiverTrainingHoursPerQuarter,
+      maxTelehealthShare: teleCap !== "" ? toNum(teleCap) : TARGETS.maxTelehealthShare,
+    };
+    configs.push({ name, email: email || undefined, requiredHoursByMonth, targets });
+  }
+  if (configs.length === 0) warnings.push("Requirements sheet produced no BCBA configs — check the sheet name and 'Consultant Name' column.");
+  return configs;
+}
+
+function main(workbook: ExcelScript.Workbook, sessionsCsv: string, ptoCsv: string): ScriptResult {
+  const warnings: string[] = [];
+  if (!sessionsCsv || sessionsCsv.trim() === "") warnings.push("sessionsCsv was empty.");
+
+  const sessions = parseSessions(sessionsCsv || "");
+  const pto = parsePto(ptoCsv || "");
+  const pairings = readPairings(workbook);
+  const configs = readConfigs(workbook, warnings);
+  const telehealthOverrideClients = readOverrides(workbook);
+  const ptoNameOverrides = readNameOverrides(workbook);
+
+  const reports = buildAllReports({
+    sessions,
+    pto,
+    pairings,
+    configs,
+    telehealthOverrideClients,
+    ptoNameOverrides,
+  });
+
+  const generatedAt = new Date().toISOString();
+  const out: ReportOutput[] = reports.map((r) => {
+    r.generatedAt = generatedAt;
+    return { name: r.bcba, email: r.email || "", reportJson: JSON.stringify(r) };
+  });
+
+  return { generatedAt, count: out.length, reports: out, warnings };
+}
