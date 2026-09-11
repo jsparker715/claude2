@@ -61,14 +61,23 @@ Add **SharePoint → Get file content using path** twice:
 | `Get_sessions` | your site | `/Billing Inputs/sessions.csv` |
 | `Get_pto` | your site | `/Billing Inputs/pto.csv` |
 
-Then two **Compose** actions to turn the file bytes into a string:
+Then two **Compose** actions to turn the file bytes into a string. **Enter each
+via the fx (Expression) editor so it's a blue token, not gray text** — typed-as-
+text expressions are passed literally and the script gets the sentence, not the
+CSV:
 
 - `sessionsText` = `base64ToString(outputs('Get_sessions')?['body']?['$content'])`
 - `ptoText`      = `base64ToString(outputs('Get_pto')?['body']?['$content'])`
 
-> If your connector returns already-decoded text, use the file-content dynamic
-> value directly instead of `base64ToString(...)`. Test once and keep whichever
-> yields readable CSV.
+> Two mistakes to avoid here (both give 0 hours / Total-only reports):
+> 1. **Wrong file** — make sure `sessionsText` references `Get_sessions` and
+>    `ptoText` references `Get_pto` (not both the same file).
+> 2. **Literal text** — the value must be a blue expression token. Verify by
+>    checking the Run script action's **Inputs** after a test run: `sessionsCsv`
+>    should start with `client,team_member,billing_code,...`.
+>
+> If a value comes back empty, try `base64ToString(body('Get_sessions')?['$content'])`
+> instead (some tenants expose it as `body(...)` rather than `outputs(...)?['body']`).
 
 ### 2.2 Run the Office Script
 
