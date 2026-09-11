@@ -1,0 +1,16 @@
+{
+  "name": "bcba-compliance-engine",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Portable TypeScript calculation engine for BCBA billing/clinical compliance (supervision ratio, caregiver training, telehealth %, billable hours, PTO, bonus, and quarterly deficit rollover). Framework-agnostic so the same code runs in unit tests, the SharePoint web part, and a Power Automate Office Script.",
+  "type": "commonjs",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "tsc -p tsconfig.json && node --test \"dist/engine/__tests__/*.test.js\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.2",
+    "typescript": "^5.9.3"
+  }
+}
