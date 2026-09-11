@@ -89,12 +89,22 @@ Add **Excel Online (Business) → Run script**:
 | Document Library | Billing Inputs |
 | File | `BCBA Config.xlsx` |
 | Script | `BCBA – Compute Reports` |
-| sessionsCsv | `outputs('sessionsText')` |
-| ptoCsv | `outputs('ptoText')` |
+| sessionsCsv | **File Content** of `Get sessions` (pick from Dynamic content) |
+| ptoCsv | **File Content** of `Get pto` (pick from Dynamic content) |
 
-The action returns `result` with `generatedAt`, `count`, `reports[]`, and
-`warnings[]`. Optionally add a **Condition** that posts `warnings` to you if it's
-non-empty.
+**Simplest, least error-prone:** the script auto-decodes base64, so you can skip
+the Compose/`base64ToString(...)` step entirely and just **pick the "File Content"
+dynamic value** of each file action — `Get sessions` → `sessionsCsv`,
+`Get pto` → `ptoCsv`. (The `base64ToString(...)` expression form still works if
+you prefer it; just make sure it's a blue expression token, not typed text, and
+points at the right file.)
+
+The action returns `result` with `generatedAt`, `count`, `reports[]`,
+`warnings[]`, and a `diagnostics` object (`sessionRows`, `datedSessionRows`,
+`distinctTeamMembers`, `bcbaNames`, `ptoRows`). If hours come out 0, read
+`diagnostics`: 0 `sessionRows` = the feed/columns; rows present but
+`distinctTeamMembers` don't match `bcbaNames` = a name-spelling mismatch between
+the sessions export and the Requirements sheet.
 
 ### 2.3 Loop the reports and upsert
 

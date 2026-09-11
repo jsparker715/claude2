@@ -1274,6 +1274,77 @@ interface ScriptResult {
   count: number;
   reports: ReportOutput[];
   warnings: string[];
+  diagnostics: {
+    sessionsCsvLength: number;
+    sessionRows: number;
+    datedSessionRows: number;
+    distinctTeamMembers: string[];
+    bcbaNames: string[];
+    ptoRows: number;
+  };
+}
+
+/**
+ * Accept file content that is EITHER already-decoded CSV text OR base64 (what the
+ * SharePoint "Get file content" action returns in $content). This lets the flow
+ * pass the raw "File Content" dynamic value directly — no base64ToString()
+ * expression to get wrong. CSV always contains commas; base64 never does, so the
+ * two are easy to tell apart.
+ */
+function decodeMaybe(input: string): string {
+  if (!input) return "";
+  const t = input.trim();
+  if (t.indexOf(",") >= 0) return input; // has commas -> already CSV text
+  if (t.length > 16 && /^[A-Za-z0-9+/=\s]+$/.test(t)) {
+    try {
+      return utf8Decode(base64ToBytes(t));
+    } catch (e) {
+      return input;
+    }
+  }
+  return input;
+}
+
+const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+function base64ToBytes(input: string): number[] {
+  const s = input.replace(/[^A-Za-z0-9+/]/g, ""); // drop '=' padding and whitespace
+  const bytes: number[] = [];
+  for (let i = 0; i < s.length; i += 4) {
+    const e1 = B64.indexOf(s[i]);
+    const e2 = B64.indexOf(s[i + 1]);
+    const e3 = i + 2 < s.length ? B64.indexOf(s[i + 2]) : -1;
+    const e4 = i + 3 < s.length ? B64.indexOf(s[i + 3]) : -1;
+    if (e1 < 0 || e2 < 0) break;
+    bytes.push((e1 << 2) | (e2 >> 4));
+    if (e3 >= 0) bytes.push(((e2 & 15) << 4) | (e3 >> 2));
+    if (e4 >= 0) bytes.push(((e3 & 3) << 6) | e4);
+  }
+  return bytes;
+}
+function utf8Decode(bytes: number[]): string {
+  let out = "";
+  let i = 0;
+  while (i < bytes.length) {
+    const b1 = bytes[i++];
+    if (b1 < 0x80) {
+      out += String.fromCharCode(b1);
+    } else if (b1 >= 0xc0 && b1 < 0xe0) {
+      const b2 = bytes[i++];
+      out += String.fromCharCode(((b1 & 0x1f) << 6) | (b2 & 0x3f));
+    } else if (b1 >= 0xe0 && b1 < 0xf0) {
+      const b2 = bytes[i++];
+      const b3 = bytes[i++];
+      out += String.fromCharCode(((b1 & 0x0f) << 12) | ((b2 & 0x3f) << 6) | (b3 & 0x3f));
+    } else {
+      const b2 = bytes[i++];
+      const b3 = bytes[i++];
+      const b4 = bytes[i++];
+      const cp = ((b1 & 0x07) << 18) | ((b2 & 0x3f) << 12) | ((b3 & 0x3f) << 6) | (b4 & 0x3f);
+      const c = cp - 0x10000;
+      out += String.fromCharCode(0xd800 + (c >> 10), 0xdc00 + (c & 0x3ff));
+    }
+  }
+  return out;
 }
 
 /** Minimal, correct CSV parser: handles quoted fields, embedded commas, quotes, CRLF. */
@@ -1477,10 +1548,27 @@ function readConfigs(workbook: ExcelScript.Workbook, warnings: string[]): BcbaCo
 
 function main(workbook: ExcelScript.Workbook, sessionsCsv: string, ptoCsv: string): ScriptResult {
   const warnings: string[] = [];
-  if (!sessionsCsv || sessionsCsv.trim() === "") warnings.push("sessionsCsv was empty.");
 
-  const sessions = parseSessions(sessionsCsv || "");
-  const pto = parsePto(ptoCsv || "");
+  const sessionsText = decodeMaybe(sessionsCsv || "");
+  const ptoText = decodeMaybe(ptoCsv || "");
+  if (sessionsText.trim() === "") warnings.push("sessionsCsv was empty — check the Run script sessionsCsv input.");
+
+  const sessions = parseSessions(sessionsText);
+  const pto = parsePto(ptoText);
+
+  // Diagnostics so a single run reveals feed/column/name problems.
+  let datedSessions = 0;
+  const teamMembers: { [k: string]: boolean } = {};
+  for (const s of sessions) {
+    if (s.date && /^\d{4}-\d{2}-\d{2}/.test(s.date)) datedSessions++;
+    if (s.teamMember) teamMembers[s.teamMember] = true;
+  }
+  if (sessions.length === 0 && sessionsText.trim() !== "") {
+    warnings.push("Sessions text arrived but parsed to 0 rows — check the CSV header names.");
+  }
+  if (sessions.length > 0 && datedSessions === 0) {
+    warnings.push("Sessions parsed but none had a readable session_start_date — check that column.");
+  }
   const pairings = readPairings(workbook);
   const configs = readConfigs(workbook, warnings);
   const telehealthOverrideClients = readOverrides(workbook);
@@ -1501,5 +1589,18 @@ function main(workbook: ExcelScript.Workbook, sessionsCsv: string, ptoCsv: strin
     return { name: r.bcba, email: r.email || "", reportJson: JSON.stringify(r) };
   });
 
-  return { generatedAt, count: out.length, reports: out, warnings };
+  return {
+    generatedAt,
+    count: out.length,
+    reports: out,
+    warnings,
+    diagnostics: {
+      sessionsCsvLength: sessionsText.length,
+      sessionRows: sessions.length,
+      datedSessionRows: datedSessions,
+      distinctTeamMembers: Object.keys(teamMembers).slice(0, 40),
+      bcbaNames: configs.map((c) => c.name),
+      ptoRows: pto.length,
+    },
+  };
 }
