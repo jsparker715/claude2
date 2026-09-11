@@ -29,16 +29,28 @@ export function supervisionRatioCheck(ratio: number | null, t: ComplianceTargets
   return { value: ratio, target: t.minSupervisionRatio, met, detail };
 }
 
-/** Telehealth share of hours must be at or below the cap. */
-export function telehealthCheck(share: number, t: ComplianceTargets): ComplianceCheck {
-  const met = share <= t.maxTelehealthShare;
+/**
+ * Telehealth share of hours must be at or below the cap. Clients with a
+ * telehealth override are excluded from the share entirely; `exemptClientCount`
+ * is only used to annotate the detail line.
+ */
+export function telehealthCheck(
+  share: number,
+  t: ComplianceTargets,
+  exemptClientCount = 0
+): ComplianceCheck {
+  const met = share <= t.maxTelehealthShare + 1e-9;
+  const exemptNote =
+    exemptClientCount > 0
+      ? ` (${exemptClientCount} client${exemptClientCount === 1 ? "" : "s"} exempt via override)`
+      : "";
   return {
     value: share,
     target: t.maxTelehealthShare,
     met,
     detail: met
-      ? `Telehealth ${pct(share)} is within the ${pct(t.maxTelehealthShare)} cap.`
-      : `Telehealth ${pct(share)} exceeds the ${pct(t.maxTelehealthShare)} cap.`,
+      ? `Telehealth ${pct(share)} is within the ${pct(t.maxTelehealthShare)} cap${exemptNote}.`
+      : `Telehealth ${pct(share)} exceeds the ${pct(t.maxTelehealthShare)} cap${exemptNote}.`,
   };
 }
 

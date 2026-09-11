@@ -212,8 +212,56 @@ test("buildBcbaReport: bonus pays when over target and gates pass", () => {
     },
   });
   const q2 = report.periods.find((p) => p.periodKey === "2026-Q2")!;
-  // billable 126, required 40 -> 86 over target, ratio 20/100=20% >= 10%, caregiver 6 >= 6, telehealth 0.
+  // billable 126, required 40 -> 86 over target. Bonus = 86*$40 + (6-3)*$20 = 3440 + 60.
   assert.equal(q2.bonus.eligible, true);
   assert.equal(q2.bonus.hoursOverTarget, 86);
-  assert.equal(q2.bonus.amount, 86 * 25); // placeholder $25/hr
+  assert.equal(q2.bonus.amount, 86 * 40 + 3 * 20);
+});
+
+test("bonus: caregiver-excess bonus is withheld until the billable minimum is met", () => {
+  // Billable under requirement -> no hours-over bonus, and caregiver excess is blocked.
+  const report = buildBcbaReport({
+    sessions: [
+      s({ client: "Client A", teamMember: "Dr. Sam", billingCode: "97155", durationHours: 10, date: "2026-04-10" }),
+      s({ client: "Client A", teamMember: "Dr. Sam", billingCode: "97156", durationHours: 9, date: "2026-04-10" }),
+    ],
+    pto: [],
+    pairings: [{ bcba: "Dr. Sam", client: "Client A" }],
+    config: {
+      name: "Dr. Sam",
+      requiredHoursByMonth: { "2026-04": 40, "2026-05": 40, "2026-06": 40 }, // 120/qtr, billable only 19
+      targets: PLACEHOLDER_TARGETS,
+    },
+  });
+  const q2 = report.periods.find((p) => p.periodKey === "2026-Q2")!;
+  assert.equal(q2.bonus.amount, 0);
+  assert.equal(q2.bonus.eligible, false);
+  assert.ok(q2.bonus.blockedBy.some((b) => /billable requirement not met/i.test(b)));
+});
+
+test("telehealth override: exempt client is excluded from the cap", () => {
+  const sessions: SessionRow[] = [
+    // Assigned exempt client: heavy telehealth that should NOT count against the cap.
+    s({ client: "Client Exempt", teamMember: "Dr. Sam", billingCode: "97155", durationHours: 10, telehealth: true, date: "2026-04-10" }),
+    // Regular client: all in person.
+    s({ client: "Client Reg", teamMember: "Dr. Sam", billingCode: "97155", durationHours: 10, date: "2026-04-10" }),
+  ];
+  const base = {
+    sessions,
+    pto: [] as PtoRow[],
+    pairings: [
+      { bcba: "Dr. Sam", client: "Client Exempt" },
+      { bcba: "Dr. Sam", client: "Client Reg" },
+    ],
+    config: { name: "Dr. Sam", requiredHoursByMonth: {}, targets: PLACEHOLDER_TARGETS },
+  };
+  const without = buildBcbaReport(base).periods.find((p) => p.periodKey === "2026-Q2")!;
+  const withOverride = buildBcbaReport({ ...base, telehealthOverrideClients: ["Client Exempt"] }).periods.find(
+    (p) => p.periodKey === "2026-Q2"
+  )!;
+  // Without override: 10 of 20 hrs telehealth = 50%.
+  assert.equal(without.telehealthCheck.value, 0.5);
+  // With override: exempt client dropped entirely -> 0 of 10 = 0%.
+  assert.equal(withOverride.telehealthCheck.value, 0);
+  assert.equal(withOverride.telehealthCheck.met, true);
 });

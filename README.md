@@ -34,11 +34,11 @@ npm run build   # compile to dist/
 ## Status
 
 - [x] Calculation engine + tests
-- [ ] Interactive BCBA dashboard prototype (next)
+- [x] Business rules encoded (ratio 10–20%, telehealth ≤50% + per-client override, 3 caregiver hrs/qtr, 50% rollover, $40/hr + $20/hr bonus — see `docs/ARCHITECTURE.md` §7)
+- [x] Interactive BCBA dashboard prototype
 - [ ] SPFx web part
 - [ ] Power Automate flow + Office Script bundling
-- [ ] Confirm business-rule placeholders (see `docs/ARCHITECTURE.md` §7)
 
-> Business-rule numbers in `src/engine/defaults.ts` are **placeholders** — real
-> supervision-ratio band, caregiver-training requirement, telehealth cap, and
-> bonus formula need confirming before go-live.
+> Two data items still to finalize (see `docs/ARCHITECTURE.md` §7): the exact
+> `session_location_type` value that means telehealth, and which clients carry
+> the telehealth override.

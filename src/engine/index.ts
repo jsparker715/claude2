@@ -39,6 +39,7 @@ export * from "./types";
 export * from "./results";
 export { detectPeriods } from "./periods";
 export { computeRollover } from "./rollover";
+export { isTelehealthLocation, TELEHEALTH_LOCATION_VALUES } from "./telehealth";
 
 export interface EngineInput {
   sessions: SessionRow[];
@@ -48,6 +49,8 @@ export interface EngineInput {
   options?: EngineOptions;
   /** Optional PTO name reconciliation map (nickname -> canonical BCBA name). */
   ptoNameOverrides?: Record<string, string>;
+  /** Clients with a telehealth override — excluded from the telehealth cap. */
+  telehealthOverrideClients?: string[];
 }
 
 function resolveOptions(options?: EngineOptions) {
@@ -60,20 +63,37 @@ function resolveOptions(options?: EngineOptions) {
   };
 }
 
-/** Telehealth hours & total hours across the assigned clients (all team members), for a period. */
-function caseloadTelehealth(
+/**
+ * Telehealth share for the cap check. Clients in `exemptNorm` (per-client
+ * override) are excluded from BOTH numerator and denominator, so approved
+ * telehealth never counts against the BCBA.
+ *   - basis "personallyDelivered": rows the BCBA delivered
+ *   - basis "caseload": rows for assigned clients, any provider
+ */
+function telehealthShare(
   periodSessions: SessionRow[],
-  assignedClientsNorm: Set<string>
-): { telehealth: number; total: number } {
+  opts: {
+    basis: "caseload" | "personallyDelivered";
+    bcbaNorm: string;
+    assignedNorm: Set<string>;
+    exemptNorm: Set<string>;
+  }
+): number {
   let telehealth = 0;
   let total = 0;
   for (const s of periodSessions) {
-    if (!assignedClientsNorm.has(normalizeName(s.client))) continue;
+    const cNorm = normalizeName(s.client);
+    if (opts.exemptNorm.has(cNorm)) continue; // approved telehealth — off the cap
+    if (opts.basis === "personallyDelivered") {
+      if (normalizeName(s.teamMember) !== opts.bcbaNorm) continue;
+    } else {
+      if (!opts.assignedNorm.has(cNorm)) continue;
+    }
     const hrs = Number(s.durationHours) || 0;
     total += hrs;
     if (s.telehealth) telehealth += hrs;
   }
-  return { telehealth, total };
+  return total > 0 ? telehealth / total : 0;
 }
 
 function requiredForMonths(cfg: BcbaConfig, months: string[]): number | null {
@@ -106,6 +126,12 @@ export function buildBcbaReport(input: EngineInput): BcbaReport {
     assignedClients.push(p.client);
   }
 
+  // Clients with a telehealth override (excluded from the telehealth cap).
+  const exemptNorm = new Set<string>();
+  for (const c of input.telehealthOverrideClients || []) exemptNorm.add(normalizeName(c));
+  let exemptAssignedCount = 0;
+  for (const n of assignedNorm) if (exemptNorm.has(n)) exemptAssignedCount++;
+
   // PTO for this BCBA (respecting name overrides), distributed to months.
   const myPto = input.pto.filter(
     (r) => canonicalName(r.employee, input.ptoNameOverrides) === bcba
@@ -120,7 +146,6 @@ export function buildBcbaReport(input: EngineInput): BcbaReport {
     personal: PersonalAggregate;
     clients: ReturnType<typeof clientMetrics>;
     supRatio: number | null;
-    telehealthShare: number;
     ptoHours: number;
     baseRequired: number | null;
     supCheck: ComplianceCheck;
@@ -140,14 +165,13 @@ export function buildBcbaReport(input: EngineInput): BcbaReport {
       supRatio = caseloadSupervisionRatio(clients).ratio;
     }
 
-    // Telehealth share basis.
-    let telehealthShare: number;
-    if (opt.telehealthBasis === "caseload") {
-      const ct = caseloadTelehealth(periodSessions, assignedNorm);
-      telehealthShare = ct.total > 0 ? ct.telehealth / ct.total : 0;
-    } else {
-      telehealthShare = personal.billableHours > 0 ? personal.telehealthHours / personal.billableHours : 0;
-    }
+    // Telehealth share for the cap (exempt clients excluded from both sides).
+    const teleShare = telehealthShare(periodSessions, {
+      basis: opt.telehealthBasis,
+      bcbaNorm: bcba,
+      assignedNorm,
+      exemptNorm,
+    });
 
     const ptoHours = ptoForMonths(ptoByMonth, def.months);
     const baseRequired = requiredForMonths(input.config, def.months);
@@ -158,11 +182,10 @@ export function buildBcbaReport(input: EngineInput): BcbaReport {
       personal,
       clients,
       supRatio,
-      telehealthShare,
       ptoHours,
       baseRequired,
       supCheck: supervisionRatioCheck(supRatio, targets),
-      teleCheck: telehealthCheck(telehealthShare, targets),
+      teleCheck: telehealthCheck(teleShare, targets, exemptAssignedCount),
       caregiverCheck: caregiverTrainingCheck(personal.caregiverTrainingHours, monthsCovered, targets),
     };
   });
@@ -200,9 +223,7 @@ export function buildBcbaReport(input: EngineInput): BcbaReport {
             {
               billableHours: r.personal.billableHours,
               effectiveRequiredHours: effectiveRequired,
-              supervision: r.supCheck,
-              telehealth: r.teleCheck,
-              caregiverTraining: r.caregiverCheck,
+              caregiverTrainingHours: r.personal.caregiverTrainingHours,
             },
             opt.bonus
           )
@@ -248,6 +269,7 @@ export interface AllReportsInput {
   configs: BcbaConfig[];
   options?: EngineOptions;
   ptoNameOverrides?: Record<string, string>;
+  telehealthOverrideClients?: string[];
 }
 
 /** Build one report per BCBA config. */
@@ -260,6 +282,7 @@ export function buildAllReports(input: AllReportsInput): BcbaReport[] {
       config,
       options: input.options,
       ptoNameOverrides: input.ptoNameOverrides,
+      telehealthOverrideClients: input.telehealthOverrideClients,
     })
   );
 }

@@ -108,16 +108,21 @@ export interface EngineOptions {
 }
 
 /**
- * Bonus rule parameters. The exact dollar figures/gates are a business rule —
- * these are PLACEHOLDERS. bonus.ts documents the formula they drive.
+ * Bonus rule parameters. Confirmed formula (see bonus.ts):
+ *   $40/hr for billable hours over the (rollover-adjusted) requirement,
+ *   PLUS $20/hr for 97156 hours above 3/quarter — the second part only when the
+ *   billable minimum is met.
+ *
+ * Note: the bonus is NOT gated by supervision-ratio or telehealth compliance.
+ * Those are requirements tracked separately, not bonus conditions.
  */
 export interface BonusConfig {
-  /** Dollars per billable hour delivered ABOVE the (rollover-adjusted) requirement. */
-  ratePerHourOverTarget: number;
-  /** Bonus is only paid if ALL of these gates pass in the quarter. */
-  requireSupervisionRatioMet: boolean;
-  requireCaregiverTrainingMet: boolean;
-  requireTelehealthWithinCap: boolean;
-  /** Optional flat bonus added when every gate passes AND hours target is met. */
-  flatOnAllTargetsMet: number;
+  /** $/hr for billable hours ABOVE the (rollover-adjusted) requirement. */
+  ratePerHourOverRequirement: number;
+  /** $/hr for 97156 (caregiver-training) hours above `caregiverBonusBaseHours` in the quarter. */
+  caregiverExcessRate: number;
+  /** 97156 hours per quarter that must be reached before the excess bonus applies. */
+  caregiverBonusBaseHours: number;
+  /** The caregiver-excess bonus only pays when billable hours meet the requirement. */
+  caregiverBonusRequiresBillableMet: boolean;
 }

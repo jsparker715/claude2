@@ -267,7 +267,7 @@
   </div>
 
   <footer>
-    <b>How the live portal works:</b> you upload the month's billing + PTO files to a locked, admin-only library; a Power Automate flow runs this same calculation engine and writes one permission-isolated record per BCBA. Bonus figures use a <b>placeholder rate ($25/hr over target)</b> pending your real formula. Supervision-ratio, telehealth-cap and caregiver-training targets shown here are placeholders too.
+    <b>How the live portal works:</b> you upload the month's billing + PTO files to a locked, admin-only library; a Power Automate flow runs this same calculation engine and writes one permission-isolated record per BCBA. <b>Rules applied:</b> supervision ratio 10–20%, telehealth ≤ 50% (approved clients exempt), 3 caregiver-training hrs/quarter, 50% deficit rollover, and a bonus of $40/hr over requirement plus $20/hr for caregiver training above 3 hrs/quarter when the billable minimum is met.
   </footer>
 </div>
 
@@ -387,12 +387,15 @@
     if(isQ){
       var bn = per.bonus;
       var bstripe = bn.amount>0 ? "good" : (bn.eligible?"accent":"warn");
+      var bmeta = bn.amount>0
+        ? '<span class="chip good"><span class="dot"></span>'+fmt(bn.hoursOverTarget)+' hrs over requirement</span>'
+        : (bn.eligible ? '<span class="chip neutral">at requirement</span>'
+                       : '<span class="chip warn"><span class="dot"></span>under requirement</span>');
       k.appendChild(el("div","tile bonus",
         '<span class="stripe '+bstripe+'"></span>'+
         '<div class="cap">Est. quarterly bonus</div>'+
         '<div class="big">'+money(bn.amount)+'</div>'+
-        '<div class="meta">'+(bn.amount>0?chip(true,fmt(bn.hoursOverTarget)+" hrs over target","")
-            : (bn.blockedBy.length?'<span class="chip bad"><span class="dot"></span>blocked</span>':'<span class="chip neutral">at / under target</span>'))+'</div>'
+        '<div class="meta">'+bmeta+'</div>'
       ));
     } else {
       var cc = per.caregiverTrainingCheck;
@@ -433,18 +436,19 @@
       body.innerHTML = q.length ? '<p class="hint" style="margin-top:10px">Select a quarter ('+q.map(function(p){return p.label;}).join(", ")+') to see the bonus breakdown.</p>' : "";
       return;
     }
-    hint.textContent = "Paid on hours over target when every compliance gate passes.";
+    hint.innerHTML = "$40/hr for hours over your requirement, plus $20/hr for caregiver training (97156) above 3 hrs/quarter once the billable minimum is met.";
     var bn = per.bonus;
-    if(bn.eligible && bn.amount>0){
+    if(bn.amount>0){
       var lines = bn.breakdown.map(function(l){
         return '<div class="bonus-line"><div class="lab"><b>'+l.label+'</b><br>'+l.detail+'</div><div class="amt">'+money(l.amount)+'</div></div>';
       }).join("");
-      body.innerHTML = '<div class="bonus-amt" style="margin:10px 0 6px">'+money(bn.amount)+'</div>'+lines;
+      var total = bn.breakdown.length>1 ? '<div class="bonus-line" style="border-top:1.5px solid var(--border-strong);font-weight:700"><div class="lab"><b>Total</b></div><div class="amt">'+money(bn.amount)+'</div></div>' : '';
+      body.innerHTML = '<div class="bonus-amt" style="margin:10px 0 6px">'+money(bn.amount)+'</div>'+lines+total;
     } else if(bn.eligible){
-      body.innerHTML = '<div class="bonus-amt" style="margin:10px 0 6px">$0</div><p class="hint">All compliance gates pass — bonus starts once billable hours exceed the target.</p>';
+      body.innerHTML = '<div class="bonus-amt" style="margin:10px 0 6px">$0</div><p class="hint">Billable requirement met — the bonus starts once you go over, and rewards caregiver-training hours beyond 3.</p>';
     } else {
       body.innerHTML = '<div class="bonus-amt" style="margin:10px 0 6px;color:var(--ink-3)">$0</div>'+
-        '<div class="blocked"><div class="h">Bonus blocked</div>These gates must pass first:<br>• '+bn.blockedBy.join("<br>• ")+'</div>';
+        '<div class="blocked"><div class="h">Not yet earned</div>• '+bn.blockedBy.join("<br>• ")+'</div>';
     }
   }
 

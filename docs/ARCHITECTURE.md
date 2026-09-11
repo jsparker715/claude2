@@ -157,18 +157,27 @@ recompute of the report never risks clobbering notes.
 
 ---
 
-## 7. Open items to confirm before go-live
+## 7. Business rules (confirmed)
 
-These are **business rules**, not code — they live in config/targets:
+These live in `src/engine/defaults.ts` (`TARGETS`, `BONUS`) and per-BCBA config,
+not in engine logic:
 
-- **Telehealth column**: the sessions export has a telehealth indicator you'll
-  name; the host maps it to `SessionRow.telehealth` before calling the engine.
-  Until then telehealth % reads 0.
-- **Supervision ratio band** (`minSupervisionRatio` / `maxSupervisionRatio`).
-- **Required caregiver-training hours** (`caregiverTrainingHoursPerQuarter`).
-- **Telehealth cap** (`maxTelehealthShare`).
-- **Bonus formula** (`ratePerHourOverTarget`, gates, `flatOnAllTargetsMet`).
-- **Rollover** confirmed: 50% of a quarter's deficit is added to the next
-  quarter's target (`rolloverFraction = 0.5`); optional `rolloverCapHours`.
+- **Supervision ratio band**: 10%–20% (97155:97153).
+- **Caregiver training (97156)**: 3 hours required per quarter.
+- **Telehealth**: read from the `session_location_type` column; cap 50%, with a
+  **per-client override** — approved clients are excluded from the cap
+  (`EngineInput.telehealthOverrideClients`, applied by `telehealthShare`).
+- **Bonus**: `$40/hr` over the (rollover-adjusted) requirement, **plus** `$20/hr`
+  for 97156 hours above 3/quarter, the second part only when the billable minimum
+  is met. Not gated by supervision-ratio or telehealth compliance.
+- **Rollover**: 50% of a quarter's deficit is added to the next quarter's target
+  (`rolloverFraction = 0.5`); optional `rolloverCapHours`.
 
-All placeholders live in `src/engine/defaults.ts`, clearly marked.
+### Still to finalize
+
+- **The exact `session_location_type` value(s)** that mean telehealth. The
+  resolver (`telehealth.ts`, `TELEHEALTH_LOCATION_VALUES`) currently matches
+  common spellings (`telehealth`, `virtual`, `remote`, …); confirm the real
+  string and set it there.
+- **Which clients carry the telehealth override** — supplied as data per run
+  (a SharePoint list/column), not hardcoded.
