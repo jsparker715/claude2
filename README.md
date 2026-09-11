@@ -11,9 +11,14 @@ month.
   reproduces the `passage-billing-report` skill's math and adds telehealth %,
   week-by-week breakdowns, bonus calculations, and the quarterly 50%-deficit
   rollover. Fully unit-tested (`npm test`).
+- **`spfx/`** — the SharePoint (SPFx) web part: the production viewer each BCBA
+  loads. Reads their own precomputed report and renders the dashboard; writes
+  their notes back. Thin by design — isolation is enforced by SharePoint
+  permissions, not the UI. See `spfx/README.md` and `spfx/sharepoint-setup/`.
+- **`prototype/`** — the clickable design prototype (published as an artifact).
 - **`docs/ARCHITECTURE.md`** — the SharePoint-only, permission-isolated design
   (no Azure) that makes "BCBAs can't see peers' data" airtight, and how the
-  engine plugs into Power Automate + an SPFx web part.
+  engine plugs into Power Automate + the SPFx web part.
 
 ## Why the engine is standalone TypeScript
 
@@ -36,8 +41,8 @@ npm run build   # compile to dist/
 - [x] Calculation engine + tests
 - [x] Business rules encoded (ratio 10–20%, telehealth ≤50% + per-client override, 3 caregiver hrs/qtr, 50% rollover, $40/hr + $20/hr bonus — see `docs/ARCHITECTURE.md` §7)
 - [x] Interactive BCBA dashboard prototype
-- [ ] SPFx web part
-- [ ] Power Automate flow + Office Script bundling
+- [x] SPFx web part (`spfx/`) — viewer, notes write-back, sample-data fallback; typechecked (build/deploy in your tenant)
+- [ ] Power Automate flow + Office Script bundling (the monthly recompute)
 
 > Two data items still to finalize (see `docs/ARCHITECTURE.md` §7): the exact
 > `session_location_type` value that means telehealth, and which clients carry

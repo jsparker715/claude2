@@ -1,0 +1,11 @@
+# SPFx / build output
+node_modules/
+lib/
+dist/
+temp/
+release/
+solution/
+*.sppkg
+.heft/
+*.log
+.tmp/

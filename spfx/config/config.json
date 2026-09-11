@@ -1,0 +1,18 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/spfx-build/config.2.0.schema.json",
+  "version": "2.0",
+  "bundles": {
+    "bcba-compliance-web-part": {
+      "components": [
+        {
+          "entrypoint": "./lib/webparts/bcbaCompliance/BcbaComplianceWebPart.js",
+          "manifest": "./src/webparts/bcbaCompliance/BcbaComplianceWebPart.manifest.json"
+        }
+      ]
+    }
+  },
+  "externals": {},
+  "localizedResources": {
+    "BcbaComplianceWebPartStrings": "lib/webparts/bcbaCompliance/loc/{locale}.js"
+  }
+}

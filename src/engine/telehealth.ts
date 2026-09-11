@@ -8,14 +8,11 @@
  * spellings; set TELEHEALTH_LOCATION_VALUES to your real value(s) once known.
  */
 
-/** Location-type values treated as telehealth (case-insensitive, trimmed). */
-export const TELEHEALTH_LOCATION_VALUES = [
-  "telehealth",
-  "telehealth (home)",
-  "telehealth (other)",
-  "virtual",
-  "remote",
-];
+/**
+ * Location-type values treated as telehealth (matched case-insensitively, trimmed).
+ * Confirmed values from the practice's `session_location_type` column.
+ */
+export const TELEHEALTH_LOCATION_VALUES = ["Telehealth", "TelehealthHome"];
 
 /**
  * True if a `session_location_type` value denotes telehealth.

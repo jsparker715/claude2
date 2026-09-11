@@ -1,0 +1,40 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/spfx-build/package-solution.schema.json",
+  "solution": {
+    "name": "bcba-compliance-webpart-client-side-solution",
+    "id": "336e9fd2-1636-4ee3-ad0f-d0490362ceb7",
+    "version": "0.1.0.0",
+    "includeClientSideAssets": true,
+    "skipFeatureDeployment": true,
+    "isDomainIsolated": false,
+    "developer": {
+      "name": "BrightPath",
+      "websiteUrl": "",
+      "privacyUrl": "",
+      "termsOfUseUrl": "",
+      "mpnId": ""
+    },
+    "metadata": {
+      "shortDescription": {
+        "default": "Per-BCBA billing & clinical compliance dashboard."
+      },
+      "longDescription": {
+        "default": "Shows each behavior analyst only their own supervision ratio, telehealth %, caregiver training, billable hours vs target, quarterly bonus, weekly breakdown, and deficit rollover. Data is precomputed per BCBA and secured with item-level permissions."
+      },
+      "screenshotPaths": [],
+      "videoUrl": "",
+      "categories": []
+    },
+    "features": [
+      {
+        "title": "BCBA Compliance Web Part",
+        "description": "Deploys the BCBA compliance dashboard web part.",
+        "id": "3c04b1df-b8e1-4dd7-8734-3e5964b07215",
+        "version": "0.1.0.0"
+      }
+    ]
+  },
+  "paths": {
+    "zippedPackage": "solution/bcba-compliance-webpart.sppkg"
+  }
+}
