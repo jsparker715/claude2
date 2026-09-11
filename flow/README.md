@@ -126,13 +126,17 @@ version-proof way is a **text vs text** compare:
 **If yes (update — preserves Notes):** SharePoint **Update item**
 - List: `BCBA Reports`; Id: `@{first(body('Get_existing')?['value'])?['ID']}`
 - `Title` = `name`, `UserEmail` = `email`, `ReportJson` = `reportJson`,
-  `GeneratedAt` = `body('Run_script')?['result']?['generatedAt']`,
-  `PersonLookup Claims` = `items('Apply_to_each')?['email']`
+  `GeneratedAt` = `body('Run_script')?['result']?['generatedAt']`
 - **Leave `Notes` blank/untouched** so saved notes survive the recompute.
+- **`PersonLookup` is optional — leave it empty.** It's informational only; privacy
+  is enforced by the permission steps below, not this column. If you do want it
+  filled, set it with the **fx** expression `items('Apply_to_each')?['email']`
+  (entered as an expression token, never typed as plain text — typing it literally
+  causes `The specified user … could not be found`).
 
 **If no (create + lock down):**
-1. SharePoint **Create item** (`Create_item`) — same fields as the update. Its
-   output gives the new `ID`.
+1. SharePoint **Create item** (`Create_item`) — same fields as the update
+   (`PersonLookup` optional, same rule as above). Its output gives the new `ID`.
 2. **Send an HTTP request to SharePoint** — break inheritance:
    - `POST` `_api/web/lists/getbytitle('BCBA Reports')/items(@{body('Create_item')?['ID']})/breakroleinheritance(copyRoleAssignments=false,clearSubscopes=true)`
 3. **Send an HTTP request to SharePoint** — ensure the user (`Ensure_user`):

@@ -25,7 +25,7 @@ Holds each BCBA's computed report. Columns:
 |---|---|---|
 | `Title` | Single line | BCBA display name |
 | `UserEmail` | Single line of text | join key the web part filters on; must equal the BCBA's sign-in email |
-| `PersonLookup` | Person or Group | the BCBA's account — used to grant per-item read |
+| `PersonLookup` | Person or Group | optional/informational — shows whose row it is. NOT the privacy mechanism (that's the per-item permission grant via `ensureuser` in the flow). Fine to leave empty. |
 | `ReportJson` | Multiple lines (plain text) | the serialized `BcbaReport`. Make it plain text, not rich text, and large enough (it's a few KB) |
 | `Notes` | Multiple lines (plain text) | the BCBA's private notes; the web part writes here |
 | `GeneratedAt` | Date and Time | set by the flow |
