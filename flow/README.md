@@ -101,7 +101,11 @@ JSON escaping.
 
 **(a) Find an existing row** — SharePoint **Get items** (`Get_existing`):
 - List: `BCBA Reports`
-- Filter Query: `UserEmail eq '@{items('Apply_to_each')?['email']}'`
+- Filter Query (escape apostrophes in emails like `ao'brien@…` by doubling them,
+  or the OData query breaks):
+  ```
+  UserEmail eq '@{replace(items('Apply_to_each')?['email'],'''','''''')}'
+  ```
 - Top Count: `1`
 
 **(b) Condition** — does a row already exist? The visual builder mis-types
