@@ -104,17 +104,24 @@ JSON escaping.
 - Filter Query: `UserEmail eq '@{items('Apply_to_each')?['email']}'`
 - Top Count: `1`
 
-**(b) Condition** — does a row already exist? Add a **Condition**, click
-**Edit in advanced mode**, and paste this single expression (the visual builder
-mis-types `length(...)` as text vs. the number 0 and errors — advanced mode
-avoids that):
+**(b) Condition** — does a row already exist? The visual builder mis-types
+`length(...)` (a number) against `0` and errors ("greater expects matching
+types"). Newer designers also removed *Edit in advanced mode*. The reliable,
+version-proof way is a **text vs text** compare:
 
-```
-@greater(length(body('Get_existing')?['value']), 0)
-```
+- **Left box** → fx (expression):
+  ```
+  if(greater(length(body('Get_existing')?['value']),0),'yes','no')
+  ```
+- **Operator** → is equal to
+- **Right box** → the plain text `yes`
+
+`yes` → the row exists (**If yes** = update). `no` → **If no** = create + lock down.
 
 > Replace `Get_existing` with your Get items action's real name (spaces become
 > underscores — e.g. a "Get items" action is `body('Get_items')?['value']`).
+> Alternative: keep `length(...) is greater than` but set the right box with the
+> **fx** icon to the number `0` (not the text "0").
 
 **If yes (update — preserves Notes):** SharePoint **Update item**
 - List: `BCBA Reports`; Id: `@{first(body('Get_existing')?['value'])?['ID']}`
