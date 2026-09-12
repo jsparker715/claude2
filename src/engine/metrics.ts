@@ -10,7 +10,7 @@
  */
 import { SessionRow, CODE_DIRECT, CODE_SUPERVISION, CODE_CAREGIVER_TRAINING } from "./types";
 import { ClientMetrics } from "./results";
-import { normalizeName } from "./names";
+import { normalizeName, clientKey } from "./names";
 import { parseISODate, monthKey } from "./dateutil";
 import { PeriodDef } from "./periods";
 
@@ -71,8 +71,8 @@ export function clientMetrics(
   monthsCovered: number
 ): ClientMetrics[] {
   const target = normalizeName(bcba);
-  const wanted = new Map<string, string>(); // normalized -> display
-  for (const c of assignedClients) wanted.set(normalizeName(c), c);
+  const wanted = new Map<string, string>(); // client key -> display
+  for (const c of assignedClients) wanted.set(clientKey(c), c);
 
   // Required family-training hours this period: 3/quarter, pro-rated by months.
   const quarterEquivalents = monthsCovered > 0 ? monthsCovered / 3 : 1;
@@ -101,7 +101,7 @@ export function clientMetrics(
   }
 
   for (const s of sessions) {
-    const cNorm = normalizeName(s.client);
+    const cNorm = clientKey(s.client);
     const acc = accs.get(cNorm);
     if (!acc) continue; // not an assigned client
     const hrs = Number(s.durationHours) || 0;

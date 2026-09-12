@@ -323,7 +323,7 @@ function main(workbook: ExcelScript.Workbook, sessionsCsv: string, ptoCsv: strin
   for (const s of sessions) {
     if (s.date && /^\d{4}-\d{2}-\d{2}/.test(s.date)) datedSessions++;
     if (s.teamMember) teamMembers[s.teamMember] = true;
-    if (s.client) sessionClients[normalizeName(s.client)] = true;
+    if (s.client) sessionClients[clientKey(s.client)] = true;
     if (s.billingCode === "97153") rows97153++;
     else if (s.billingCode === "97155") rows97155++;
     else if (s.billingCode === "97156") rows97156++;
@@ -336,7 +336,7 @@ function main(workbook: ExcelScript.Workbook, sessionsCsv: string, ptoCsv: strin
   }
   const pairings = readPairings(workbook);
   const pairingClientSet: { [k: string]: boolean } = {};
-  for (const p of pairings) pairingClientSet[normalizeName(p.client)] = true;
+  for (const p of pairings) pairingClientSet[clientKey(p.client)] = true;
   const unmatchedClients = Object.keys(sessionClients).filter((c) => !pairingClientSet[c]);
   if (rows97153 > 0 && unmatchedClients.length > 0) {
     warnings.push(

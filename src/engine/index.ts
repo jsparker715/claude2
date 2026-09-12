@@ -15,7 +15,7 @@ import {
   PeriodReport,
   ComplianceCheck,
 } from "./results";
-import { normalizeName, canonicalName } from "./names";
+import { normalizeName, canonicalName, clientKey } from "./names";
 import { parseISODate, monthKey } from "./dateutil";
 import { detectPeriods, PeriodDef } from "./periods";
 import {
@@ -83,7 +83,7 @@ function telehealthShare(
   let telehealth = 0;
   let total = 0;
   for (const s of periodSessions) {
-    const cNorm = normalizeName(s.client);
+    const cNorm = clientKey(s.client);
     if (opts.exemptNorm.has(cNorm)) continue; // approved telehealth — off the cap
     if (opts.basis === "personallyDelivered") {
       if (normalizeName(s.teamMember) !== opts.bcbaNorm) continue;
@@ -108,7 +108,7 @@ export function buildBcbaReport(input: EngineInput): BcbaReport {
   const assignedNorm = new Set<string>();
   for (const p of input.pairings) {
     if (normalizeName(p.bcba) !== bcba) continue;
-    const norm = normalizeName(p.client);
+    const norm = clientKey(p.client);
     if (!norm || assignedSeen.has(norm)) continue;
     assignedSeen.add(norm);
     assignedNorm.add(norm);
@@ -117,7 +117,7 @@ export function buildBcbaReport(input: EngineInput): BcbaReport {
 
   // Clients with a telehealth override (excluded from the telehealth cap).
   const exemptNorm = new Set<string>();
-  for (const c of input.telehealthOverrideClients || []) exemptNorm.add(normalizeName(c));
+  for (const c of input.telehealthOverrideClients || []) exemptNorm.add(clientKey(c));
   let exemptAssignedCount = 0;
   for (const n of assignedNorm) if (exemptNorm.has(n)) exemptAssignedCount++;
 

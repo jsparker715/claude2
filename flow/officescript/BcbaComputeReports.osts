@@ -125,6 +125,31 @@ function canonicalName(s: string, overrides?: Record<string, string>): string {
   return n;
 }
 
+/**
+ * Forgiving key for matching CLIENT names between the sessions export and the
+ * Pairings sheet. It absorbs the common cosmetic differences so real clients
+ * match without hand-editing, while still leaving genuinely different clients
+ * unmatched (so they're ignored, never mis-credited):
+ *   - case-insensitive
+ *   - "Last, First" reordered to "First Last"
+ *   - punctuation (commas, periods, hyphens, apostrophes) dropped
+ *   - internal whitespace collapsed
+ * Apply to BOTH sides before comparing.
+ */
+function clientKey(s: string | null | undefined): string {
+  let n = normalizeName(s).toLowerCase();
+  if (!n) return "";
+  const comma = n.indexOf(",");
+  if (comma >= 0) {
+    const parts = n.split(",").map((x) => x.trim()).filter((x) => x.length > 0);
+    n = parts.length === 2 ? parts[1] + " " + parts[0] : parts.join(" ");
+  }
+  // Drop apostrophes/periods with NO space (O'Brien -> obrien, J. -> j); turn
+  // other punctuation (hyphens, slashes, remaining commas) into spaces.
+  n = n.replace(/['`.’]/g, "");
+  return n.replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
 // ---- engine/telehealth.ts -----------------------------------------------
 /**
  * Telehealth resolution. Your sessions export carries a `session_location_type`
@@ -616,8 +641,8 @@ function clientMetrics(
   monthsCovered: number
 ): ClientMetrics[] {
   const target = normalizeName(bcba);
-  const wanted = new Map<string, string>(); // normalized -> display
-  for (const c of assignedClients) wanted.set(normalizeName(c), c);
+  const wanted = new Map<string, string>(); // client key -> display
+  for (const c of assignedClients) wanted.set(clientKey(c), c);
 
   // Required family-training hours this period: 3/quarter, pro-rated by months.
   const quarterEquivalents = monthsCovered > 0 ? monthsCovered / 3 : 1;
@@ -646,7 +671,7 @@ function clientMetrics(
   }
 
   for (const s of sessions) {
-    const cNorm = normalizeName(s.client);
+    const cNorm = clientKey(s.client);
     const acc = accs.get(cNorm);
     if (!acc) continue; // not an assigned client
     const hrs = Number(s.durationHours) || 0;
@@ -1075,7 +1100,7 @@ function telehealthShare(
   let telehealth = 0;
   let total = 0;
   for (const s of periodSessions) {
-    const cNorm = normalizeName(s.client);
+    const cNorm = clientKey(s.client);
     if (opts.exemptNorm.has(cNorm)) continue; // approved telehealth — off the cap
     if (opts.basis === "personallyDelivered") {
       if (normalizeName(s.teamMember) !== opts.bcbaNorm) continue;
@@ -1100,7 +1125,7 @@ function buildBcbaReport(input: EngineInput): BcbaReport {
   const assignedNorm = new Set<string>();
   for (const p of input.pairings) {
     if (normalizeName(p.bcba) !== bcba) continue;
-    const norm = normalizeName(p.client);
+    const norm = clientKey(p.client);
     if (!norm || assignedSeen.has(norm)) continue;
     assignedSeen.add(norm);
     assignedNorm.add(norm);
@@ -1109,7 +1134,7 @@ function buildBcbaReport(input: EngineInput): BcbaReport {
 
   // Clients with a telehealth override (excluded from the telehealth cap).
   const exemptNorm = new Set<string>();
-  for (const c of input.telehealthOverrideClients || []) exemptNorm.add(normalizeName(c));
+  for (const c of input.telehealthOverrideClients || []) exemptNorm.add(clientKey(c));
   let exemptAssignedCount = 0;
   for (const n of assignedNorm) if (exemptNorm.has(n)) exemptAssignedCount++;
 
@@ -1631,7 +1656,7 @@ function main(workbook: ExcelScript.Workbook, sessionsCsv: string, ptoCsv: strin
   for (const s of sessions) {
     if (s.date && /^\d{4}-\d{2}-\d{2}/.test(s.date)) datedSessions++;
     if (s.teamMember) teamMembers[s.teamMember] = true;
-    if (s.client) sessionClients[normalizeName(s.client)] = true;
+    if (s.client) sessionClients[clientKey(s.client)] = true;
     if (s.billingCode === "97153") rows97153++;
     else if (s.billingCode === "97155") rows97155++;
     else if (s.billingCode === "97156") rows97156++;
@@ -1644,7 +1669,7 @@ function main(workbook: ExcelScript.Workbook, sessionsCsv: string, ptoCsv: strin
   }
   const pairings = readPairings(workbook);
   const pairingClientSet: { [k: string]: boolean } = {};
-  for (const p of pairings) pairingClientSet[normalizeName(p.client)] = true;
+  for (const p of pairings) pairingClientSet[clientKey(p.client)] = true;
   const unmatchedClients = Object.keys(sessionClients).filter((c) => !pairingClientSet[c]);
   if (rows97153 > 0 && unmatchedClients.length > 0) {
     warnings.push(

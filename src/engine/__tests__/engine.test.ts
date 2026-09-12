@@ -244,6 +244,27 @@ test("bonus: caregiver-excess bonus is withheld until the billable minimum is me
   assert.ok(q2.bonus.blockedBy.some((b) => /billable requirement not met/i.test(b)));
 });
 
+test("client matching tolerates case + 'Last, First' + punctuation for the ratio", () => {
+  const sessions: SessionRow[] = [
+    // Pairing says "John O'Brien"; sessions say "OBRIEN, JOHN" — should still match.
+    s({ client: "OBRIEN, JOHN", teamMember: "Tech Joe", billingCode: "97153", durationHours: 20, date: "2026-04-06" }),
+    s({ client: "O'Brien, John", teamMember: "Dr. Sam", billingCode: "97155", durationHours: 4, date: "2026-04-07" }),
+    // A truly different client is ignored (not credited to Sam).
+    s({ client: "Someone Else", teamMember: "Tech Joe", billingCode: "97153", durationHours: 99, date: "2026-04-06" }),
+  ];
+  const report = buildBcbaReport({
+    sessions,
+    pto: [],
+    pairings: [{ bcba: "Dr. Sam", client: "John O'Brien" }],
+    config: { name: "Dr. Sam", requiredHoursByMonth: {}, targets: PLACEHOLDER_TARGETS },
+  });
+  const q2 = report.periods.find((p) => p.periodKey === "2026-Q2")!;
+  assert.equal(q2.clients.length, 1);
+  assert.equal(q2.clients[0].directHours, 20);
+  assert.equal(q2.clients[0].supervisionHours, 4);
+  assert.equal(q2.supervisionRatioCheck.value, 0.2); // 4/20, ignoring the unmatched client's 99
+});
+
 test("zero-requirement month is excluded from excess/variance/bonus", () => {
   const sessions: SessionRow[] = [
     s({ client: "Client A", teamMember: "Dr. Sam", billingCode: "97155", durationHours: 30, date: "2026-04-10" }), // Apr req 0 -> excluded
